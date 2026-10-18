@@ -1,0 +1,29 @@
+[Unit]
+Description=Zotero MCP server
+After=network-online.target
+Wants=network-online.target
+OnFailure=ntfy-alert@%n.service
+
+[Service]
+Type=simple
+User=pi
+SupplementaryGroups=zotero-dav
+WorkingDirectory=/home/pi/zotero-mcp
+EnvironmentFile=/etc/zotero-mcp/env
+Environment=PYTHONDONTWRITEBYTECODE=1
+ExecStart=/home/pi/zotero-mcp/.venv/bin/python /home/pi/zotero-mcp/server.py
+Restart=always
+RestartSec=5
+
+# Sandboxing: the service is reachable from the internet through Tailscale Funnel
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=tmpfs
+BindReadOnlyPaths=/home/pi/zotero-mcp
+ReadOnlyPaths=/srv/zotero-webdav
+PrivateTmp=yes
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+CapabilityBoundingSet=
+
+[Install]
+WantedBy=multi-user.target
