@@ -10,8 +10,10 @@ MCP server to search, read and edit a Zotero library through the Zotero Web API 
 
 ```sh
 python -m venv .venv
-.venv/bin/pip install -r requirements.txt
+.venv/bin/pip install --require-hashes -r requirements.lock.txt
 ```
+
+`requirements.lock.txt` pins every dependency with hashes (the versions running on the Pi). To update, loosen the pins, run `uv pip compile requirements.txt --universal --python-version 3.13 --generate-hashes -o requirements.lock.txt`, and run `uvx pip-audit` on the result.
 
 ## Configuration
 
@@ -22,6 +24,7 @@ All settings are environment variables.
 | `ZOTERO_USER_ID` | yes | | Numeric Zotero user ID |
 | `ZOTERO_API_KEY` | yes | | Zotero API key |
 | `ZOTERO_WEBDAV_DIR` | no | `/srv/zotero-webdav/zotero` | Directory with the `KEY.zip` attachment files |
+| `ZOTERO_MAX_PDF_MB` | no | `200` | Attachments larger than this are refused instead of being read into memory |
 | `MCP_TRANSPORT` | no | `stdio` | `stdio` or `http` |
 | `PORT` | no | `3003` | HTTP port (bound to 127.0.0.1) |
 | `MCP_AUTH_TOKEN` | in http mode | | At least 32 characters; sent as `Authorization: Bearer` header or `?token=` query parameter |
