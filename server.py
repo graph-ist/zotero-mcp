@@ -30,6 +30,7 @@ VERSION = "0.3.0"
 USER_ID = os.environ.get("ZOTERO_USER_ID", "")
 API_KEY = os.environ.get("ZOTERO_API_KEY", "")
 WEBDAV_DIR = os.environ.get("ZOTERO_WEBDAV_DIR", "/srv/zotero-webdav/zotero")
+MAX_PDF_BYTES = int(os.environ.get("ZOTERO_MAX_PDF_MB", "200")) * 1024 * 1024
 API = "https://api.zotero.org"
 BASE = f"{API}/users/{USER_ID}"
 KEY_RE = re.compile(r"[A-Z0-9]{8}")
@@ -213,7 +214,14 @@ def _pdf_bytes(att_key: str) -> bytes | None:
     if not os.path.isfile(path):
         return None
     with zipfile.ZipFile(path) as z:
-        return next((b for b in (z.read(n) for n in z.namelist()) if b[:5] == b"%PDF-"), None)
+        for info in z.infolist():
+            # The whole member is read into RAM, so refuse oversized (or zip-bomb) entries up front
+            if info.file_size > MAX_PDF_BYTES:
+                raise ToolError(f"attachment {att_key} is larger than {MAX_PDF_BYTES >> 20} MB, not read")
+            data = z.read(info)
+            if data[:5] == b"%PDF-":
+                return data
+    return None
 
 
 def _pdf_text_from_webdav(att_key: str) -> str | None:

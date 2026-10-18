@@ -36,3 +36,21 @@ print("second occurrence ok", c["rects"])
 assert _locate(data, "not in this pdf", None, 0) is None
 assert _locate(data, "Design epistemology", 1, 0) is None
 print("ALL OK")
+
+# Size cap: a PDF inside a zip is returned, and refused once it exceeds the limit
+import tempfile  # noqa: E402
+import zipfile  # noqa: E402
+import server  # noqa: E402
+
+with tempfile.TemporaryDirectory() as d:
+    server.WEBDAV_DIR = d
+    with zipfile.ZipFile(os.path.join(d, "ABCD2345.zip"), "w") as z:
+        z.writestr("x.pdf", data)
+    assert server._pdf_bytes("ABCD2345") == data
+    server.MAX_PDF_BYTES = len(data) - 1
+    try:
+        server._pdf_bytes("ABCD2345")
+        raise AssertionError("cap not enforced")
+    except server.ToolError:
+        pass
+print("size cap ok")
