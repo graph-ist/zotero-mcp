@@ -55,6 +55,27 @@ def test_enqueue_rejects_bad_keys():
     raise AssertionError("bad key accepted")
 
 
+def test_attach_writes_new_file_and_metadata():
+    key, pdf, calls = "NEWA1234", b"%PDF-open-access", []
+    os.makedirs(w.INCOMING, exist_ok=True)
+    open(os.path.join(w.INCOMING, f"{key}.pdf"), "wb").write(pdf)
+    real, w.sync_file_metadata = w.sync_file_metadata, lambda *a: calls.append(a)
+    try:
+        w.attach(key, "Casner 2005.pdf")
+        with zipfile.ZipFile(os.path.join(w.WEBDAV, f"{key}.zip")) as z:
+            assert z.namelist() == ["Casner 2005.pdf"] and z.read("Casner 2005.pdf") == pdf
+        assert calls[0][:2] == (key, hashlib.md5(pdf).hexdigest())
+        assert not os.path.exists(os.path.join(w.INCOMING, f"{key}.pdf"))
+        open(os.path.join(w.INCOMING, f"{key}.pdf"), "wb").write(pdf)
+        try:
+            w.attach(key, "again.pdf")  # never overwrite an existing file
+            raise AssertionError("existing file overwritten")
+        except RuntimeError:
+            pass
+    finally:
+        w.sync_file_metadata = real
+
+
 if __name__ == "__main__":
     for name, fn in list(globals().items()):
         if name.startswith("test_"):

@@ -29,7 +29,7 @@ import zipfile
 WEBDAV = os.environ.get("ZOTERO_WEBDAV_DIR", "/srv/zotero-webdav/zotero")
 ROOT = os.environ.get("ZOTERO_OCR_DIR", "/var/lib/zotero-mcp/ocr")
 LANGS = os.environ.get("ZOTERO_OCR_LANGS", "eng+ita")
-QUEUE, STATUS, CACHE, WORK = (os.path.join(ROOT, d) for d in ("queue", "status", "cache", "work"))
+QUEUE, STATUS, CACHE, WORK, INCOMING = (os.path.join(ROOT, d) for d in ("queue", "status", "cache", "work", "incoming"))
 ORIGINALS = os.path.join(os.path.dirname(ROOT), "originals")
 MAX_PDF_BYTES = int(os.environ.get("ZOTERO_MAX_PDF_MB", "200")) * 1024 * 1024
 KEY_RE = re.compile(r"[A-Z0-9]{8}")
@@ -137,6 +137,12 @@ def replace_in_webdav(key: str, member: str, pdf: bytes) -> tuple[str, int]:
     shutil.copy2(zip_path, os.path.join(ORIGINALS, f"{key}-{time.strftime('%Y%m%d-%H%M%S')}.zip"))
     if os.path.exists(prop_path):
         shutil.copy2(prop_path, os.path.join(ORIGINALS, f"{key}-{time.strftime('%Y%m%d-%H%M%S')}.prop"))
+    return write_to_webdav(key, member, pdf)
+
+
+def write_to_webdav(key: str, member: str, pdf: bytes) -> tuple[str, int]:
+    """Write KEY.zip (one member) and KEY.prop atomically, as Zotero's WebDAV sync does."""
+    zip_path, prop_path = (os.path.join(WEBDAV, f"{key}.{ext}") for ext in ("zip", "prop"))
     old_umask = os.umask(0o002)  # group zotero-dav (rclone) must keep write access
     try:
         tmp_zip, tmp_prop = f"{zip_path}.ocr-tmp", f"{prop_path}.ocr-tmp"
@@ -194,10 +200,26 @@ def rasterize(data: bytes, enhance: bool = False, dpi: int = 300) -> bytes:
     return result
 
 
+def attach(key: str, filename: str) -> None:
+    """New attachment created by attach_pdf: move INCOMING/KEY.pdf into WebDAV, then give the item
+    its md5/mtime so Zotero clients download it. The file must not exist yet."""
+    src = os.path.join(INCOMING, f"{key}.pdf")
+    if os.path.exists(os.path.join(WEBDAV, f"{key}.zip")):
+        raise RuntimeError("a file for this attachment already exists on WebDAV")
+    pdf = open(src, "rb").read()
+    if pdf[:5] != b"%PDF-":
+        raise RuntimeError("incoming file is not a PDF")
+    sync_file_metadata(key, *write_to_webdav(key, os.path.basename(filename), pdf))
+    os.remove(src)
+
+
 def process(job: dict) -> dict:
     key, replace = job["key"], job.get("replace", "no")
     started = time.time()
     set_status(key, state="running", started=now(), replace=replace)
+    if job.get("action") == "attach":
+        attach(key, job["filename"])
+        set_status(key, attached=True)
     found = read_pdf(key)
     if found is None:
         return set_status(key, state="skipped", reason="no PDF in the attachment")
@@ -205,6 +227,9 @@ def process(job: dict) -> dict:
     pages, with_text = text_pages(data)
     mode = job.get("mode", "normal")  # normal | rasterize | enhance; the last two always redo the OCR
     if mode == "normal" and with_text >= pages * NATIVE_SHARE and not os.path.exists(os.path.join(CACHE, f"{key}.pdf")):
+        if job.get("action") == "attach":
+            return set_status(key, state="done", reason="attached; the PDF has text, no OCR needed", pages=pages,
+                              seconds=int(time.time() - started))
         return set_status(key, state="skipped", reason="the PDF already has text", pages=pages)
 
     cached = os.path.join(CACHE, f"{key}.pdf")
@@ -261,6 +286,17 @@ def run_queue() -> None:
                 set_status(job["key"], state="failed", error=str(e)[:500])
                 print(job["key"], "failed:", e)
             os.remove(path)
+
+
+def enqueue_attach(key: str, filename: str) -> dict:
+    """Job for a PDF saved in INCOMING by attach_pdf: store it, then OCR it if it is a scan."""
+    if not KEY_RE.fullmatch(key):
+        raise ValueError(f"invalid key {key!r}")
+    os.makedirs(QUEUE, exist_ok=True)
+    write_json(os.path.join(QUEUE, f"{key}.json"), {"key": key, "action": "attach", "filename": filename,
+                                                     "replace": "if-unannotated", "source": "attach_pdf",
+                                                     "requested": now()})
+    return set_status(key, state="queued", replace="if-unannotated", source="attach_pdf", error=None)
 
 
 def enqueue(key: str, replace: str = "no", source: str = "manual", mode: str = "normal") -> dict:

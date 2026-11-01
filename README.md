@@ -61,12 +61,14 @@ The endpoint is `http://127.0.0.1:3003/mcp`. The query-string token exists becau
 
 | Area | Tools |
 |---|---|
-| Search and read | `search_items`, `get_item`, `get_fulltext`, `list_collections`, `list_tags`, `list_saved_searches`, `list_trash`, `list_related`, `find_duplicates` |
+| Search and read | `search_items`, `find_dois`, `get_item`, `get_fulltext`, `list_collections`, `list_tags`, `list_saved_searches`, `list_trash`, `list_related`, `find_duplicates` |
 | Create | `create_item`, `create_item_from_doi`, `create_collection`, `add_note` |
 | Edit | `update_item`, `update_items_batch`, `update_item_tags`, `set_item_collections`, `set_related`, `update_collection`, `rename_tag` |
 | Delete and restore | `trash_item`, `restore_item`, `delete_collection`, `delete_tag` |
 | Output | `format_citations`, `export_items` |
-| PDF | `get_annotations`, `annotate_pdf`, `ocr_pdf`, `ocr_status` |
+| PDF | `get_annotations`, `annotate_pdf`, `attach_pdf`, `ocr_pdf`, `ocr_status` |
+
+`find_dois` checks a list of DOIs against the library in one call (DOI field and `DOI:` lines in Extra); the index is rebuilt only when the library version changes, and `create_item_from_doi` uses it to refuse duplicates. `attach_pdf` finds open access copies of an item's DOI on OpenAlex (or takes a direct link), tries them in order until one returns a PDF, creates the attachment and hands the file to the OCR worker, which stores it on WebDAV and OCRs it if it is a scan. Publishers often refuse automated downloads; repositories usually do not.
 
 `get_fulltext` uses Zotero's full-text index first and falls back to text extracted from the WebDAV copy (PDF, else EPUB) with PyMuPDF. For a scanned PDF it returns the OCR text; if there is none yet, OCR is queued automatically and the response says so. `annotate_pdf` locates a passage in the PDF and creates a highlight or underline annotation through the API; the PDF file is not modified. On a scan it uses the OCR copy. Writes use `If-Unmodified-Since-Version`, so a conflicting change made elsewhere returns an error instead of being overwritten.
 

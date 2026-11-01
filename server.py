@@ -26,7 +26,7 @@ from mcp.server.fastmcp import FastMCP
 from mcp.server.transport_security import TransportSecuritySettings
 from pydantic import Field
 
-VERSION = "0.4.0"
+VERSION = "0.5.0"
 USER_ID = os.environ.get("ZOTERO_USER_ID", "")
 API_KEY = os.environ.get("ZOTERO_API_KEY", "")
 WEBDAV_DIR = os.environ.get("ZOTERO_WEBDAV_DIR", "/srv/zotero-webdav/zotero")
@@ -581,6 +581,167 @@ CSL_TYPES = {"journal-article": "journalArticle", "proceedings-article": "confer
              "dissertation": "thesis", "dataset": "dataset"}
 
 
+_DOI_PREFIX = re.compile(r"^(https?://(dx\.)?doi\.org/|doi:\s*)", re.I)
+_doi_index: dict = {"version": None, "items": {}}
+
+
+def _norm_doi(doi: str) -> str:
+    return _DOI_PREFIX.sub("", doi.strip()).strip().rstrip(".").lower()
+
+
+async def _library_dois() -> dict[str, dict]:
+    """DOI -> item summary for the whole library (DOI field, or "DOI: ..." in Extra for types
+    without one). Rebuilt only when the library version changes."""
+    headers = {"If-Modified-Since-Version": str(_doi_index["version"])} if _doi_index["version"] else None
+    r = await _req("GET", "/items/top", params={"limit": 1, "format": "keys"}, headers=headers)
+    if r.status_code == 304:
+        return _doi_index["items"]
+    version, items, start = r.headers.get("Last-Modified-Version"), {}, 0
+    while True:
+        r = await _req("GET", "/items/top", params={"limit": 100, "start": start})
+        if r.status_code != 200:
+            raise ToolError(f"library not readable (HTTP {r.status_code})")
+        page = r.json()
+        for it in page:
+            d = it["data"]
+            found = [d.get("DOI") or ""] + re.findall(r"^DOI:\s*(\S+)", d.get("extra") or "", re.M | re.I)
+            for doi in filter(None, map(_norm_doi, found)):
+                items.setdefault(doi, _summary(it))
+        start += len(page)
+        if len(page) < 100 or start >= int(r.headers.get("Total-Results", start)):
+            break
+    _doi_index.update(version=version, items=items)
+    return items
+
+
+@mcp.tool()
+@_tool
+async def find_dois(
+    dois: Annotated[list[str], Field(description="DOIs, with or without https://doi.org/ or doi: prefix", max_length=500)],
+) -> dict:
+    """Which of these DOIs are already in the library: one call for a whole reference list, map or
+    search result. Matches the DOI field and "DOI:" lines in Extra, case-insensitively."""
+    index = await _library_dois()
+    found, missing = {}, []
+    for doi in dois:
+        hit = index.get(_norm_doi(doi))
+        if hit:
+            found[doi] = {k: hit.get(k) for k in ("key", "title", "creators", "date")}
+        else:
+            missing.append(doi)
+    return {"in_library": found, "missing": missing, "checked": len(dois), "library_dois": len(index)}
+
+
+def _pdf_filename(d: dict) -> str:
+    """'Casner 2005.pdf', 'Miller Ward 2002.pdf': first two surnames and year, as in the library."""
+    names = [c.get("lastName") or c.get("name") or "" for c in d.get("creators", [])
+             if c.get("creatorType") in ("author", "editor")][:2]
+    year = (re.search(r"\d{4}", d.get("date") or "") or [""])[0]
+    base = " ".join(filter(None, names + [year])) or (d.get("title") or "Full text")[:60]
+    return re.sub(r'[\\/:*?"<>|]+', " ", base).strip() + ".pdf"
+
+
+async def _open_access_pdfs(doi: str) -> list[dict]:
+    """Open access PDF links for a DOI from OpenAlex, best first: url, version, license, host.
+    Several are kept because publishers often refuse automated downloads; repositories do not."""
+    r = await _public().get(f"https://api.openalex.org/works/doi:{doi}")
+    if r.status_code != 200:
+        return []
+    w, out = r.json(), []
+    for loc in [w.get("best_oa_location")] + (w.get("locations") or []):
+        if loc and loc.get("pdf_url") and loc["pdf_url"] not in [o["url"] for o in out]:
+            out.append({"url": loc["pdf_url"], "version": loc.get("version"), "license": loc.get("license"),
+                        "host": (loc.get("source") or {}).get("display_name")})
+    return out
+
+
+async def _download_pdf(url: str) -> bytes:
+    data = bytearray()
+    try:
+        async with _public().stream("GET", url, headers={"Accept": "application/pdf"}) as r:
+            if r.status_code != 200:
+                raise ToolError(f"download failed (HTTP {r.status_code}) from {url}")
+            async for chunk in r.aiter_bytes():
+                data += chunk
+                if len(data) > MAX_PDF_BYTES:
+                    raise ToolError(f"file larger than {MAX_PDF_BYTES >> 20} MB")
+    except httpx.HTTPError as e:
+        raise ToolError(f"download failed ({type(e).__name__}) from {url}") from None
+    if bytes(data[:5]) != b"%PDF-":
+        raise ToolError(f"{url} did not return a PDF (probably a landing page or a paywall); "
+                        "open it in a browser, or pass a direct PDF link as url")
+    return bytes(data)
+
+
+@mcp.tool()
+@_tool
+async def attach_pdf(
+    key: Annotated[str, Field(description="Key of the parent item")],
+    url: Annotated[str | None, Field(description="Direct PDF link; omit to look up an open access PDF "
+                                     "for the item's DOI on OpenAlex")] = None,
+    allow_second_pdf: Annotated[bool, Field(description="Attach even if the item already has a PDF")] = False,
+) -> dict:
+    """Attach a PDF to an item: an open access copy found via the DOI, or a given link. The file goes
+    to the WebDAV storage through the background worker (seconds), then Zotero clients download it;
+    a scan is also OCRed. Only for legally available copies (open access, author versions)."""
+    import ocr_worker
+    item = (await _get_item(key))["data"]
+    if item["itemType"] in ("attachment", "note", "annotation"):
+        raise ToolError("give the key of a regular item, not of an attachment or note")
+    r = await _req("GET", f"/items/{item['key']}/children")
+    pdfs = [c["data"]["key"] for c in (r.json() if r.status_code == 200 else [])
+            if c["data"].get("contentType") == "application/pdf"]
+    if pdfs and not allow_second_pdf:
+        return {"status": "already_has_pdf", "attachment_keys": pdfs}
+    if url:
+        sources = [{"url": url}]
+    else:
+        dois = [item.get("DOI") or ""] + re.findall(r"^DOI:\s*(\S+)", item.get("extra") or "", re.M | re.I)
+        doi = next(filter(None, map(_norm_doi, dois)), None)
+        if not doi:
+            raise ToolError("the item has no DOI: pass url")
+        sources = await _open_access_pdfs(doi)
+        if not sources:
+            return {"status": "no_open_access_pdf", "doi": doi}
+    data, tried = None, []
+    for source in sources:
+        try:
+            data = await _download_pdf(source["url"])
+            break
+        except ToolError as e:
+            tried.append(str(e))
+    if data is None:
+        return {"status": "download_failed", "tried": tried,
+                "hint": "publishers often block automated downloads: open a link in a browser, "
+                        "or pass a direct PDF link (e.g. an author or repository copy) as url"}
+
+    filename = _pdf_filename(item)
+    r = await _req("GET", f"{API}/items/new", params={"itemType": "attachment", "linkMode": "imported_file"})
+    tpl = r.json()
+    tpl.update(parentItem=item["key"], title=filename[:-4], filename=filename, contentType="application/pdf",
+               url=source["url"], accessDate=time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()))
+    tpl = {k: v for k, v in tpl.items() if k not in ("md5", "mtime")}
+    out = await _post_items([tpl])
+    if out.get("status") != "ok":
+        raise ToolError(f"attachment not created: {out}")
+    att = out["created_keys"][0]
+    try:
+        os.makedirs(os.path.join(OCR_DIR, "incoming"), exist_ok=True)
+        old = os.umask(0o007)
+        try:
+            with open(os.path.join(OCR_DIR, "incoming", f"{att}.pdf"), "wb") as f:
+                f.write(data)
+        finally:
+            os.umask(old)
+        await asyncio.to_thread(ocr_worker.enqueue_attach, att, filename)
+    except Exception:
+        await _req("DELETE", f"/items/{att}", headers={"If-Unmodified-Since-Version": str(
+            (await _get_item(att))["version"])})
+        raise
+    return {"status": "queued", "attachment_key": att, "filename": filename, "bytes": len(data),
+            **{k: v for k, v in source.items() if v}, "next": "check ocr_status; then sync Zotero"}
+
+
 @mcp.tool()
 @_tool
 async def create_item_from_doi(
@@ -598,11 +759,10 @@ async def create_item_from_doi(
     title = " ".join((m.get("title") or [""])[0].split())
     if m.get("subtitle"):
         title += ": " + m["subtitle"][0]
-    if not allow_duplicate and title:
-        s = await _req("GET", "/items/top", params={"q": title[:100], "limit": 25})
-        for it in (s.json() if s.status_code == 200 else []):
-            if (it["data"].get("DOI") or "").lower() == doi.lower():
-                return {"status": "duplicate", "existing": _summary(it)}
+    if not allow_duplicate:
+        existing = (await _library_dois()).get(_norm_doi(doi))
+        if existing:
+            return {"status": "duplicate", "existing": existing}
     item_type = CSL_TYPES.get(m.get("type"), "journalArticle")
     tpl = await _template(item_type)
     container = (m.get("container-title") or [None])[0]
