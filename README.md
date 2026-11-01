@@ -86,6 +86,10 @@ Modes: `normal`; `rasterize`, pages redrawn as images and deskewed, for PDFs tha
 ocr_worker.py run | scan | enqueue KEY [--replace] [--mode normal|rasterize|enhance]
 ```
 
+## Library snapshot
+
+`snapshot.py` writes `/var/lib/knowledge/library.json` (items with key, DOI, title, creators, year, tags, collection paths, PDF/EPUB attachments) for services that must not call the Zotero API, such as the DOI MCP's literature maps. It does nothing when the library version is unchanged. `deploy/knowledge-snapshot-zotero.service` and `.timer` run it hourly as `zotero-mcp` with group `knowledge`.
+
 ## Deployment
 
 The repository includes the files used to run the server on a Raspberry Pi (Debian) and expose it through Tailscale Funnel. Paths, the user name and the LAN range are specific to that setup and need adapting.

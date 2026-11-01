@@ -1,0 +1,10 @@
+[Unit]
+Description=Refresh the Zotero library snapshot hourly (no-op when the library is unchanged)
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=1h
+RandomizedDelaySec=5min
+
+[Install]
+WantedBy=timers.target

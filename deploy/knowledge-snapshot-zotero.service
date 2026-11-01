@@ -1,0 +1,20 @@
+[Unit]
+Description=Snapshot of the Zotero library for other services (/var/lib/knowledge/library.json)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=zotero-mcp
+SupplementaryGroups=knowledge
+EnvironmentFile=/etc/zotero-mcp/env
+Environment=PYTHONDONTWRITEBYTECODE=1
+ExecStart=/home/pi/zotero-mcp/.venv/bin/python /home/pi/zotero-mcp/snapshot.py
+Nice=10
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=tmpfs
+BindReadOnlyPaths=/home/pi/zotero-mcp
+ReadWritePaths=/var/lib/knowledge
+PrivateTmp=yes
+CapabilityBoundingSet=
