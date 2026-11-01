@@ -26,11 +26,12 @@ from mcp.server.fastmcp import FastMCP
 from mcp.server.transport_security import TransportSecuritySettings
 from pydantic import Field
 
-VERSION = "0.3.0"
+VERSION = "0.4.0"
 USER_ID = os.environ.get("ZOTERO_USER_ID", "")
 API_KEY = os.environ.get("ZOTERO_API_KEY", "")
 WEBDAV_DIR = os.environ.get("ZOTERO_WEBDAV_DIR", "/srv/zotero-webdav/zotero")
 MAX_PDF_BYTES = int(os.environ.get("ZOTERO_MAX_PDF_MB", "200")) * 1024 * 1024
+OCR_DIR = os.environ.get("ZOTERO_OCR_DIR", "/var/lib/zotero-mcp/ocr")
 API = "https://api.zotero.org"
 BASE = f"{API}/users/{USER_ID}"
 KEY_RE = re.compile(r"[A-Z0-9]{8}")
@@ -224,13 +225,56 @@ def _pdf_bytes(att_key: str) -> bytes | None:
     return None
 
 
-def _pdf_text_from_webdav(att_key: str) -> str | None:
-    data = _pdf_bytes(att_key)
-    if data is None:
+def _epub_bytes(att_key: str) -> bytes | None:
+    path = os.path.join(WEBDAV_DIR, f"{att_key}.zip")
+    if not os.path.isfile(path):
         return None
+    with zipfile.ZipFile(path) as z:
+        for info in z.infolist():
+            if info.filename.lower().endswith(".epub"):
+                if info.file_size > MAX_PDF_BYTES:
+                    raise ToolError(f"attachment {att_key} is larger than {MAX_PDF_BYTES >> 20} MB, not read")
+                return z.read(info)
+    return None
+
+
+def _ocr_cached(att_key: str, ext: str) -> str | None:
+    """Path of the OCR result (pdf or txt) made by ocr_worker.py for a scanned PDF, if any."""
+    path = os.path.join(OCR_DIR, "cache", f"{att_key}.{ext}")
+    return path if os.path.isfile(path) else None
+
+
+def _queue_ocr(att_key: str) -> str:
+    """Scanned PDF without OCR yet: queue it once (replaced on WebDAV only while unannotated)."""
+    import ocr_worker
+    path = os.path.join(OCR_DIR, "status", f"{att_key}.json")
+    if os.path.exists(path):
+        state = json.load(open(path)).get("state")
+        if state in ("queued", "running", "failed"):
+            return state
+    ocr_worker.enqueue(att_key, "if-unannotated", "auto")
+    return "queued"
+
+
+def _text_from_webdav(att_key: str, content_type: str) -> tuple[str | None, str | None]:
+    """(text, OCR state when the PDF is a scan whose OCR is not ready)."""
     import pymupdf
-    with pymupdf.open(stream=data, filetype="pdf") as doc:
-        return "\n\n".join(p.get_text() for p in doc).strip()
+    if content_type == "application/epub+zip":
+        data, kind = _epub_bytes(att_key), "epub"
+    else:
+        data, kind = _pdf_bytes(att_key), "pdf"
+    if data is None:
+        return None, None
+    with pymupdf.open(stream=data, filetype=kind) as doc:
+        pages = [p.get_text() for p in doc]
+    # A scanned PDF (text on under 70% of pages, as in ocr_worker.py) gives way to its OCR text;
+    # without one, OCR is queued automatically.
+    if kind == "pdf" and sum(len(t.strip()) >= 50 for t in pages) < 0.7 * len(pages):
+        cached = _ocr_cached(att_key, "txt")
+        if cached:
+            return open(cached, encoding="utf-8").read(), None
+        return "\n\n".join(pages).strip(), _queue_ocr(att_key)
+    return "\n\n".join(pages).strip(), None
 
 
 def _norm_word(w: str) -> str:
@@ -291,6 +335,21 @@ def _locate(data: bytes, text: str, page: int | None, occurrence: int) -> dict |
     return None
 
 
+async def _pdf_attachment(key: str) -> dict:
+    """The attachment itself, or the first PDF attachment of a parent item."""
+    it = await _get_item(key)
+    if it["data"]["itemType"] == "attachment":
+        if it["data"].get("contentType") != "application/pdf":
+            raise ToolError("this attachment is not a PDF")
+        return it
+    r = await _req("GET", f"/items/{it['key']}/children")
+    pdfs = [c for c in (r.json() if r.status_code == 200 else [])
+            if c["data"]["itemType"] == "attachment" and c["data"].get("contentType") == "application/pdf"]
+    if not pdfs:
+        raise ToolError("no PDF attachment for this item")
+    return pdfs[0]
+
+
 @mcp.tool()
 @_tool
 async def annotate_pdf(
@@ -308,26 +367,22 @@ async def annotate_pdf(
 ) -> dict:
     """Highlight or underline a passage in a PDF; it appears in Zotero's reader on every device.
 
-    The PDF file itself is not modified. Needs the PDF on WebDAV and selectable text (no scans)."""
+    The PDF file itself is not modified. Needs the PDF on WebDAV with text; scans work once ocr_pdf
+    has processed them (the OCR copy has the same page geometry)."""
     if not re.fullmatch(r"#[0-9a-fA-F]{6}", color):
         raise ToolError("color must be #RRGGBB")
-    it = await _get_item(key)
-    if it["data"]["itemType"] == "attachment":
-        att = it
-    else:
-        r = await _req("GET", f"/items/{it['key']}/children")
-        pdfs = [c for c in (r.json() if r.status_code == 200 else [])
-                if c["data"]["itemType"] == "attachment" and c["data"].get("contentType") == "application/pdf"]
-        if not pdfs:
-            raise ToolError("no PDF attachment for this item")
-        att = pdfs[0]
+    att = await _pdf_attachment(key)
     data = await asyncio.to_thread(_pdf_bytes, att["key"])
     if data is None:
         raise ToolError("PDF not found on WebDAV: sync files from Zotero desktop first")
     loc = await asyncio.to_thread(_locate, data, text, page, occurrence)
+    ocr = _ocr_cached(att["key"], "pdf")
+    if loc is None and ocr:  # scanned page: same positions in the OCR copy
+        loc = await asyncio.to_thread(_locate, open(ocr, "rb").read(), text, page, occurrence)
     if loc is None:
         raise ToolError("text not found in the PDF; copy it exactly (try a shorter passage, "
-                        "avoid words hyphenated across lines) or check the page number")
+                        "avoid words hyphenated across lines) or check the page number"
+                        + ("" if ocr else "; if the PDF is a scan, run ocr_pdf first"))
     if dry_run:
         return {"status": "found", "attachment_key": att["key"], "page": loc["pageLabel"],
                 "lines": len(loc["rects"])}
@@ -341,6 +396,43 @@ async def annotate_pdf(
     out = await _post_items([ann])
     out |= {"attachment_key": att["key"], "page": loc["pageLabel"]}
     return out
+
+
+@mcp.tool()
+@_tool
+async def ocr_pdf(
+    key: Annotated[str, Field(description="Item key or PDF attachment key")],
+    replace: Annotated[bool, Field(description="Also replace the PDF on WebDAV with the OCR version, "
+                                   "so the text can be selected in Zotero on every device (original kept on the Pi)")] = False,
+    mode: Annotated[Literal["normal", "rasterize", "enhance"], Field(
+        description="normal: text layer over the original pages. rasterize: pages redrawn as images and "
+                    "deskewed, for PDFs whose OCR failed (corrupt images). enhance: as rasterize plus contrast/"
+                    "sharpening, only for poor scans with bad text. rasterize/enhance redo the OCR even if done")] = "normal",
+) -> dict:
+    """Queue OCR for a scanned PDF. Runs in the background on the Pi (minutes to hours for a book):
+    the text goes to Zotero's full-text index, and get_fulltext / annotate_pdf work on the scan.
+    PDFs that already have text are left alone. Follow progress with ocr_status."""
+    import ocr_worker
+    att = await _pdf_attachment(key)
+    status = await asyncio.to_thread(ocr_worker.enqueue, att["key"], "yes" if replace else "no", "tool", mode)
+    return {"status": "queued", "attachment_key": att["key"], "replace": replace, "mode": mode, "queued_at": status["updated"]}
+
+
+@mcp.tool()
+@_tool
+async def ocr_status(
+    key: Annotated[str | None, Field(description="Item or attachment key; omit to list every OCR job")] = None,
+) -> dict:
+    """State of OCR jobs: queued, running, done (pages, seconds, indexed, replaced), skipped or failed."""
+    folder = os.path.join(OCR_DIR, "status")
+    if key:
+        att = await _pdf_attachment(key)
+        path = os.path.join(folder, f"{att['key']}.json")
+        if not os.path.exists(path):
+            return {"attachment_key": att["key"], "state": "never queued"}
+        return json.load(open(path))
+    jobs = [json.load(open(os.path.join(folder, n))) for n in sorted(os.listdir(folder))] if os.path.isdir(folder) else []
+    return {"total": len(jobs), "jobs": sorted(jobs, key=lambda j: j.get("updated", ""), reverse=True)}
 
 
 @mcp.tool()
@@ -396,35 +488,41 @@ async def get_item(key: Annotated[str, Field(description="8-character item key")
 @mcp.tool()
 @_tool
 async def get_fulltext(
-    key: Annotated[str, Field(description="Item key or PDF attachment key")],
+    key: Annotated[str, Field(description="Item key or PDF/EPUB attachment key")],
     offset: Annotated[int, Field(ge=0)] = 0,
     max_chars: Annotated[int, Field(ge=1000, le=100000)] = 30000,
 ) -> dict:
-    """Text of an item's PDF: Zotero's full-text index first, else extracted from the WebDAV copy.
+    """Text of an item's PDF or EPUB: Zotero's full-text index first, else read from the WebDAV copy
+    (scanned PDFs use their OCR text once ocr_pdf has processed them).
 
     Long texts are paginated: call again with offset = previous offset + returned length."""
+    readable = ("application/pdf", "application/epub+zip")
     it = await _get_item(key)
     if it["data"]["itemType"] == "attachment":
         atts = [it]
     else:
         r = await _req("GET", f"/items/{it['key']}/children")
         atts = [c for c in (r.json() if r.status_code == 200 else [])
-                if c["data"]["itemType"] == "attachment" and c["data"].get("contentType") == "application/pdf"]
+                if c["data"]["itemType"] == "attachment" and c["data"].get("contentType") in readable]
+        atts.sort(key=lambda c: c["data"].get("contentType") != "application/pdf")  # PDF first
     if not atts:
-        raise ToolError("no PDF attachment for this item")
-    att = atts[0]["key"]
-    text, source = None, None
+        raise ToolError("no PDF or EPUB attachment for this item")
+    att, content_type = atts[0]["key"], atts[0]["data"].get("contentType", "")
+    text, source, ocr = None, None, None
     r = await _req("GET", f"/items/{att}/fulltext")
     if r.status_code == 200 and r.json().get("content"):
         text, source = r.json()["content"], "zotero_fulltext_index"
     else:
-        text = await asyncio.to_thread(_pdf_text_from_webdav, att)
-        source = "webdav_pdf"
-    if not text:
-        raise ToolError("PDF not indexed in Zotero and not found on WebDAV (sync files first)")
+        text, ocr = await asyncio.to_thread(_text_from_webdav, att, content_type)
+        source = "webdav_epub" if content_type == "application/epub+zip" else "webdav_pdf"
+    note = ({"ocr": ocr, "ocr_note": "Scanned PDF: OCR runs in the background (minutes to hours, see "
+             "ocr_status); the text below is what the scan has now."} if ocr else {})
+    if not text and not ocr:
+        raise ToolError("not indexed in Zotero and no text on WebDAV: sync files first")
+    text = text or ""
     chunk = text[offset:offset + max_chars]
     return {"attachment_key": att, "source": source, "total_chars": len(text), "offset": offset,
-            "returned_chars": len(chunk), "more": offset + len(chunk) < len(text), "text": chunk}
+            "returned_chars": len(chunk), "more": offset + len(chunk) < len(text), "text": chunk, **note}
 
 
 @mcp.tool()

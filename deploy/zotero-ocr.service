@@ -1,0 +1,26 @@
+[Unit]
+Description=OCR worker for scanned PDFs in the Zotero WebDAV storage
+After=network-online.target
+Wants=network-online.target
+OnFailure=ntfy-alert@%n.service
+
+[Service]
+Type=oneshot
+User=zotero-mcp
+SupplementaryGroups=zotero-dav
+EnvironmentFile=/etc/zotero-mcp/env
+Environment=PYTHONDONTWRITEBYTECODE=1
+ExecStart=/home/pi/zotero-mcp/.venv/bin/python /home/pi/zotero-mcp/ocr_worker.py run
+# OCR is heavy: low priority, so the MCP servers stay responsive
+Nice=15
+IOSchedulingClass=idle
+TimeoutStartSec=12h
+
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=tmpfs
+BindReadOnlyPaths=/home/pi/zotero-mcp
+ReadWritePaths=/var/lib/zotero-mcp /srv/zotero-webdav/zotero
+PrivateTmp=yes
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+CapabilityBoundingSet=

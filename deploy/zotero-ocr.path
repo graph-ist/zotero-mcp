@@ -1,0 +1,9 @@
+[Unit]
+Description=Start the OCR worker when ocr_pdf queues a job
+
+[Path]
+DirectoryNotEmpty=/var/lib/zotero-mcp/ocr/queue
+Unit=zotero-ocr.service
+
+[Install]
+WantedBy=multi-user.target
