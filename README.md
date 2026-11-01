@@ -67,6 +67,7 @@ The endpoint is `http://127.0.0.1:3003/mcp`. The query-string token exists becau
 | Delete and restore | `trash_item`, `restore_item`, `delete_collection`, `delete_tag` |
 | Output | `format_citations`, `export_items` |
 | PDF | `get_annotations`, `annotate_pdf`, `attach_pdf`, `ocr_pdf`, `ocr_status` |
+| Snapshot | `refresh_library_snapshot` |
 
 `find_dois` checks a list of DOIs against the library in one call (DOI field and `DOI:` lines in Extra); the index is rebuilt only when the library version changes, and `create_item_from_doi` uses it to refuse duplicates. `attach_pdf` finds open access copies of an item's DOI on OpenAlex (or takes a direct link), tries them in order until one returns a PDF, creates the attachment and hands the file to the OCR worker, which stores it on WebDAV and OCRs it if it is a scan. Publishers often refuse automated downloads; repositories usually do not.
 
@@ -88,7 +89,7 @@ ocr_worker.py run | scan | enqueue KEY [--replace] [--mode normal|rasterize|enha
 
 ## Library snapshot
 
-`snapshot.py` writes `/var/lib/knowledge/library.json` (items with key, DOI, title, creators, year, tags, collection paths, PDF/EPUB attachments) for services that must not call the Zotero API, such as the DOI MCP's literature maps. It does nothing when the library version is unchanged. `deploy/knowledge-snapshot-zotero.service` and `.timer` run it hourly as `zotero-mcp` with group `knowledge`.
+`snapshot.py` writes `/var/lib/knowledge/library.json` (items with key, DOI, title, creators, year, tags, collection paths, PDF/EPUB attachments) for services that must not call the Zotero API, such as the DOI MCP's literature maps. The tool `refresh_library_snapshot` runs it on demand (the "Refresh library and notes" button of the Literature maps page); it does nothing when the library version is unchanged. The server needs group `knowledge` and write access to `/var/lib/knowledge`.
 
 ## Deployment
 

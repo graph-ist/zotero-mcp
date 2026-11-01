@@ -4,7 +4,8 @@ the Pi (DOI MCP literature maps, knowledge views) that must not call the Zotero 
 Items (no notes, annotations or attachments as items) with key, type, title, creators, year,
 DOI (also "DOI:" lines in Extra), ISBN, tags, collection paths and PDF/EPUB attachment keys.
 Nothing is written when the library version has not changed since the last snapshot.
-Usage: snapshot.py [--force]   Env: ZOTERO_USER_ID, ZOTERO_API_KEY, KNOWLEDGE_DIR
+Run by the MCP tool refresh_library_snapshot (the "Refresh library and notes" button of the
+Literature maps page) or by hand: snapshot.py [--force]. Env: ZOTERO_USER_ID, ZOTERO_API_KEY, KNOWLEDGE_DIR
 """
 import json
 import os
@@ -88,8 +89,8 @@ def build() -> dict:
             "items": items, "collections": sorted(path(k) for k in names)}
 
 
-def main() -> None:
-    force = "--force" in sys.argv
+def refresh(force: bool = False) -> dict:
+    """Rebuild library.json unless the library version is unchanged; returns a summary."""
     old_version = None
     if os.path.exists(OUT) and not force:
         try:
@@ -99,8 +100,7 @@ def main() -> None:
     if old_version is not None:
         status, _, _ = get("/items?limit=1&format=keys", since=old_version)
         if status == 304:
-            print("library unchanged (version", old_version, ")")
-            return
+            return {"status": "unchanged", "library_version": old_version}
     snap = build()
     old_umask = os.umask(0o027)
     try:
@@ -110,7 +110,12 @@ def main() -> None:
         os.replace(tmp, OUT)
     finally:
         os.umask(old_umask)
-    print(len(snap["items"]), "items,", len(snap["collections"]), "collections, version", snap["library_version"])
+    return {"status": "written", "items": len(snap["items"]), "collections": len(snap["collections"]),
+            "library_version": snap["library_version"], "generated": snap["generated"]}
+
+
+def main() -> None:
+    print(refresh("--force" in sys.argv))
 
 
 if __name__ == "__main__":

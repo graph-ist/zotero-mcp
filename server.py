@@ -420,6 +420,15 @@ async def ocr_pdf(
 
 @mcp.tool()
 @_tool
+async def refresh_library_snapshot() -> dict:
+    """Rewrite the library snapshot (/var/lib/knowledge/library.json) that the DOI MCP's literature
+    maps read for 'in Zotero', Zotero keys and tags. Does nothing when the library is unchanged."""
+    import snapshot
+    return await asyncio.to_thread(snapshot.refresh)
+
+
+@mcp.tool()
+@_tool
 async def ocr_status(
     key: Annotated[str | None, Field(description="Item or attachment key; omit to list every OCR job")] = None,
 ) -> dict:
