@@ -1,0 +1,92 @@
+{
+ "collections": [
+  "Design",
+  "Design › Theory"
+ ],
+ "generated": "2026-11-04T00:00:00Z",
+ "items": [
+  {
+   "attachments": [
+    {
+     "contentType": "application/pdf",
+     "key": "ATT00001"
+    }
+   ],
+   "citekey": "cross1982designerly",
+   "collection_keys": [
+    "C0000002"
+   ],
+   "collections": [
+    "Design › Theory"
+   ],
+   "creators": [
+    "Cross"
+   ],
+   "doi": "10.1016/0142-694x(82)90040-0",
+   "extra_dois": [],
+   "isbn": null,
+   "key": "ZKEY0001",
+   "language": null,
+   "patent_number": null,
+   "tags": [
+    "cited/thesis",
+    "core/seminal",
+    "sub/330304-design-theory"
+   ],
+   "title": "Designerly ways of knowing",
+   "type": "journalArticle",
+   "verified": {
+    "date": "2026-11-04",
+    "detail": "verify_doi registered_match",
+    "status": "match"
+   },
+   "year": 1982
+  },
+  {
+   "attachments": [],
+   "citekey": null,
+   "collection_keys": [],
+   "collections": [],
+   "creators": [
+    "Schön"
+   ],
+   "doi": null,
+   "extra_dois": [],
+   "isbn": "9780465068784",
+   "key": "ZKEY0002",
+   "language": null,
+   "patent_number": null,
+   "tags": [
+    "cited/thesis"
+   ],
+   "title": "The reflective practitioner",
+   "type": "book",
+   "verified": null,
+   "year": 1983
+  },
+  {
+   "attachments": [],
+   "citekey": null,
+   "collection_keys": [],
+   "collections": [],
+   "creators": [
+    "Lee"
+   ],
+   "doi": null,
+   "extra_dois": [],
+   "isbn": null,
+   "key": "ZKEY0003",
+   "language": null,
+   "patent_number": "EP3500000B1",
+   "tags": [
+    "prior-art/foldable"
+   ],
+   "title": "Foldable display device",
+   "type": "patent",
+   "verified": null,
+   "year": 2020
+  }
+ ],
+ "library_version": 7,
+ "schema_version": 1
+}

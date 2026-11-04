@@ -2,6 +2,8 @@
 the DOI MCP's literature maps (save_references) and the claim register for drafts (check_claims)."""
 import asyncio
 import json
+import os
+import time
 from typing import Annotated, Any
 
 from pydantic import Field
@@ -9,7 +11,7 @@ from pydantic import Field
 from . import bibliography
 from . import claims as cl
 from .core import ToolError, key_of, tool
-from .pdf import pages_from_webdav, pdf_attachment, text_from_webdav
+from .pdf import annotations_of, pages_from_webdav, pdf_attachment, text_from_webdav
 
 
 def snapshot_items() -> list[dict]:
@@ -165,3 +167,75 @@ async def check_claims(
     for r in out:
         counts[r["status"]] = counts.get(r["status"], 0) + 1
     return {"claims": out, "summary": counts}
+
+
+def fulltext_dir() -> str:
+    from . import config
+    return os.path.join(config.KNOWLEDGE_DIR, "fulltext")
+
+
+@tool
+async def index_fulltext(
+    item_keys: Annotated[list[str] | None, Field(description="Item keys (max 25 per call)")] = None,
+    collection: Annotated[str | None, Field(description="Collection name or path: every item in it with a PDF/EPUB")] = None,
+    force: Annotated[bool, Field(description="Write again even if already indexed")] = False,
+) -> dict:
+    """Write the text of each item's PDF or EPUB, page by page, and its highlights and comments to
+    KNOWLEDGE_DIR/fulltext/KEY.json for the shared corpus that the DOI MCP's search_everything
+    reads together with the Obsidian notes. Scans use their OCR text (a scan without OCR is
+    queued and reported). Max 25 items per call; items already indexed are skipped unless
+    force. Run it once per collection, then after adding PDFs or annotating."""
+    import os as _os
+    snap = {it["key"]: it for it in snapshot_items()}
+    if collection:
+        want = collection.strip().lower()
+        keys = [it["key"] for it in snap.values()
+                if any(p.lower() == want or p.lower().endswith(" › " + want) or p.lower().startswith(want + " › ")
+                       for p in it.get("collections", [])) and it.get("attachments")]
+        if not keys:
+            raise ToolError("no item with a PDF/EPUB in that collection (or the library snapshot is missing: refresh_library_snapshot)")
+    else:
+        keys = [key_of(k) for k in item_keys or []]
+    if not keys:
+        raise ToolError("give item_keys or collection")
+    _os.makedirs(fulltext_dir(), exist_ok=True)
+    todo = [k for k in dict.fromkeys(keys) if force or not _os.path.exists(_os.path.join(fulltext_dir(), f"{k}.json"))]
+    done_before = len(set(keys)) - len(todo)
+    results, remaining = {}, todo[25:]
+    for key in todo[:25]:
+        try:
+            atts = sorted((snap.get(key) or {}).get("attachments") or [], key=lambda a: a["contentType"] != "application/pdf")
+            if atts:
+                att_key, ctype = atts[0]["key"], atts[0]["contentType"]
+            else:
+                att = await pdf_attachment(key)
+                att_key, ctype = att["key"], "application/pdf"
+            pages, ocr = await asyncio.to_thread(pages_from_webdav, att_key, ctype)
+            if ocr:
+                results[key] = f"scan waiting for OCR ({ocr}): try again later"
+                continue
+            if pages is None:
+                results[key] = "no file on WebDAV"
+                continue
+            anns = await annotations_of(key)
+            it = snap.get(key) or {}
+            doc = {"item": key, "attachment": att_key, "title": it.get("title"), "creators": it.get("creators"),
+                   "year": it.get("year"), "indexed": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+                   "pages": [{"page": label, "text": text} for label, text in pages if text.strip()],
+                   "annotations": [{k: a.get(k) for k in ("key", "type", "page", "text", "comment")} for a in anns
+                                   if a.get("text") or a.get("comment")]}
+            tmp = _os.path.join(fulltext_dir(), f"{key}.json.tmp")
+            old_umask = _os.umask(0o027)
+            try:
+                with open(tmp, "w", encoding="utf-8") as f:
+                    json.dump(doc, f, ensure_ascii=False)
+                _os.replace(tmp, _os.path.join(fulltext_dir(), f"{key}.json"))
+            finally:
+                _os.umask(old_umask)
+            results[key] = {"pages": len(doc["pages"]), "annotations": len(doc["annotations"])}
+        except ToolError as e:
+            results[key] = f"error: {e}"
+    indexed = [v for v in results.values() if isinstance(v, dict)]
+    return {"status": "ok", "indexed": results, "items_indexed": len(indexed), "pages": sum(v["pages"] for v in indexed),
+            "annotations": sum(v["annotations"] for v in indexed), "already_done": done_before,
+            "remaining": len(remaining), **({"next": "call again for the remaining items"} if remaining else {})}

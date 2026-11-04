@@ -433,7 +433,7 @@ def test_refresh_library_snapshot_full_then_incremental(zot, call):
 
 def test_tool_count_and_names():
     names = sorted(t.name for t in run(core.mcp.list_tools()))
-    assert len(names) == 39 and {"update_item_links", "set_verification", "create_item_from_patent"} <= set(names) and "set_item_collections" not in names
+    assert len(names) == 40 and {"update_item_links", "set_verification", "create_item_from_patent", "index_fulltext"} <= set(names) and "set_item_collections" not in names
 
 
 def test_worker_uses_shared_client(zot):
@@ -549,3 +549,76 @@ def test_writes_schedule_a_snapshot_refresh(zot, monkeypatch):
     run(scenario())
     assert json.load(open(snapshot.out_path()))["items"][0]["title"] == "T"
     core._refresh["task"] = None
+
+
+def test_index_fulltext_writes_pages_and_annotations(zot, call):
+    import snapshot
+    k = article(zot, title="Design epistemology", doi="10.1000/ft")
+    att = zot.add_item("attachment", parentItem=k, contentType="application/pdf")
+    body = " Body text long enough not to look like a scan." * 6
+    put_webdav(att, "p.pdf", make_pdf(["First page about affordances." + body, "Second page about perception." + body]))
+    zot.add_item("annotation", parentItem=att, annotationType="highlight", annotationText="about affordances",
+                 annotationComment="key passage", annotationPageLabel="1", annotationSortIndex="00000|000000|00000")
+    import snapshot
+    if os.path.exists(snapshot.out_path()):
+        os.remove(snapshot.out_path())  # other tests leave a snapshot of another fake library behind
+    call("refresh_library_snapshot")
+    out = call("index_fulltext", item_keys=[k])
+    assert out["items_indexed"] == 1 and out["pages"] == 2 and out["annotations"] == 1
+    doc = json.load(open(os.path.join(config.KNOWLEDGE_DIR, "fulltext", f"{k}.json")))
+    assert doc["title"] == "Design epistemology" and doc["pages"][1]["text"].startswith("Second page")
+    assert doc["annotations"][0]["text"] == "about affordances" and doc["annotations"][0]["page"] == "1"
+    again = call("index_fulltext", item_keys=[k])
+    assert again["items_indexed"] == 0 and again["already_done"] == 1
+    assert snapshot.entry(dict(zot.items[k]["data"], extra="Citation Key: cross1982design"))["citekey"] == "cross1982design"
+
+
+def test_http_auth_requires_bearer_header_and_status_is_loopback_only():
+    import httpx
+    from zotero_mcp.transport import TokenAuth
+
+    async def inner(scope, receive, send):
+        from starlette.responses import JSONResponse
+        await JSONResponse({"ok": True})(scope, receive, send)
+
+    token = "t" * 32
+    app = TokenAuth(inner, token)
+
+    async def scenario():
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://127.0.0.1") as c:
+            assert (await c.get("/mcp?token=" + token)).status_code == 401
+            assert (await c.get("/mcp")).status_code == 401
+            ok = await c.get("/mcp", headers={"Authorization": f"Bearer {token}"})
+            assert ok.status_code == 200 and ok.json() == {"ok": True}
+            st = await c.get("/status")
+            assert st.status_code == 200 and st.json()["service"] == "zotero-mcp" and "fulltext" in st.json()
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app, client=("203.0.113.5", 4000)), base_url="http://host") as c:
+            assert (await c.get("/status")).status_code == 404
+    run(scenario())
+
+
+def test_contract_fixture_matches_the_snapshot_writer(zot):
+    """tests/fixtures/contract/library.json is what the DOI MCP's tests read: regenerate it with
+    UPDATE_CONTRACT=1 when the snapshot format changes, and copy it to the DOI MCP."""
+    import snapshot
+    c = zot.add_collection("Design", key="C0000001")
+    sub = zot.add_collection("Theory", parent=c, key="C0000002")
+    a = zot.add_item("journalArticle", key="ZKEY0001", title="Designerly ways of knowing", date="1982", DOI="10.1016/0142-694X(82)90040-0",
+                     creators=[{"creatorType": "author", "lastName": "Cross", "firstName": "Nigel"}], collections=[sub],
+                     tags=["cited/thesis", "core/seminal", "sub/330304-design-theory"],
+                     extra="Citation Key: cross1982designerly\nVerified: 2026-11-04 match verify_doi registered_match")
+    zot.add_item("attachment", key="ATT00001", parentItem=a, contentType="application/pdf")
+    zot.add_item("book", key="ZKEY0002", title="The reflective practitioner", date="1983", ISBN="9780465068784",
+                 creators=[{"creatorType": "author", "lastName": "Schön", "firstName": "Donald A."}], tags=["cited/thesis"])
+    zot.add_item("patent", key="ZKEY0003", title="Foldable display device", patentNumber="EP 3500000 B1", date="2020",
+                 creators=[{"creatorType": "inventor", "lastName": "Lee", "firstName": "Jung"}], tags=["prior-art/foldable"])
+    items: dict = {}
+    snapshot._apply(items, [o for o in zot.items.values()], [])
+    snap = snapshot._assemble(items, list(zot.collections.values()), 7)
+    snap["generated"] = "2026-11-04T00:00:00Z"
+    path = os.path.join(os.path.dirname(__file__), "fixtures", "contract", "library.json")
+    if os.environ.get("UPDATE_CONTRACT"):
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        json.dump(snap, open(path, "w", encoding="utf-8"), ensure_ascii=False, indent=1, sort_keys=True)
+    assert json.load(open(path, encoding="utf-8")) == json.loads(json.dumps(snap, sort_keys=True)), \
+        "snapshot format changed: run with UPDATE_CONTRACT=1 and copy tests/fixtures/contract to the DOI MCP"

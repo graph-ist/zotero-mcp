@@ -2,7 +2,7 @@
 override a value at run time."""
 import os
 
-VERSION = "0.8.0"
+VERSION = "0.9.0"
 USER_ID = os.environ.get("ZOTERO_USER_ID", "")
 API_KEY = os.environ.get("ZOTERO_API_KEY", "")
 WEBDAV_DIR = os.environ.get("ZOTERO_WEBDAV_DIR", "/srv/zotero-webdav/zotero")

@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.9.0 (2026-11-04)
+
+Changed (breaking)
+- HTTP transport: the token is accepted only in the `Authorization: Bearer` header; `?token=` in the URL is refused. Claude web custom connectors send it from *Request headers*.
+
+Added
+- `index_fulltext`: page texts and annotations of items written to `KNOWLEDGE_DIR/fulltext/KEY.json` for the shared corpus searched by the DOI MCP.
+- `library.json` items carry `citekey` (Better BibTeX `Citation Key:` line in Extra).
+- `GET /status` on loopback, without credentials: version, snapshot, indexed files.
+- `tests/fixtures/contract/library.json`: the snapshot format as the DOI MCP's tests read it; regenerate with `UPDATE_CONTRACT=1` and copy it over when the format changes.
+
 ## 0.8.0 (2026-11-04)
 
 Added
