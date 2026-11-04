@@ -70,7 +70,7 @@ def reset_clients() -> None:
     """Drop clients and caches (tests, or after a configuration change)."""
     global _zot, _pub
     _zot = _pub = None
-    _coll_cache[:] = [0.0, {}]
+    _coll_cache[:] = [None, {}]
     _templates.clear()
     _doi_index.update(version=None, items={}, by_key={})
 
@@ -202,12 +202,14 @@ async def items_by_keys(keys: list[str]) -> list[dict]:
 
 
 # ---- caches ---------------------------------------------------------------------------------------
-_coll_cache: list = [0.0, {}]
+_coll_cache: list = [None, {}]
 
 
 async def collections() -> dict[str, dict]:
     """key -> {name, parent, numItems, path}; cached for five minutes."""
-    if time.monotonic() - _coll_cache[0] < 300:
+    # None means "never loaded": a numeric sentinel compared with time.monotonic() (seconds since
+    # boot) read as "fresh and empty" during the first five minutes after a reboot
+    if _coll_cache[0] is not None and time.monotonic() - _coll_cache[0] < 300:
         return _coll_cache[1]
     raw = await paginate("/collections")
     by_key = {c["key"]: {"name": c["data"]["name"], "parent": c["data"].get("parentCollection") or None,
@@ -225,7 +227,7 @@ async def collections() -> dict[str, dict]:
 
 
 def invalidate_collections() -> None:
-    _coll_cache[:] = [0.0, {}]
+    _coll_cache[:] = [None, {}]
 
 
 _templates: dict[str, dict] = {}

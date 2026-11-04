@@ -473,3 +473,22 @@ def test_export_annotations_markdown_and_note(zot, call):
     article(zot, title="No annotations", collections=[c])
     out = call("export_annotations", collection_key=c)
     assert out["items"] == 1 and out["markdown"].startswith("## Design epistemology")
+
+
+def test_collections_load_in_the_first_minutes_after_boot(zot, call, monkeypatch):
+    """The cache sentinel must not read as 'fresh' when time.monotonic() is small (just after a reboot)."""
+    import time as _time
+    zot.add_collection("Early")
+    monkeypatch.setattr(_time, "monotonic", lambda: 42.0)
+    core.reset_clients()
+    assert [c["path"] for c in call("list_collections")["collections"]] == ["Early"]
+
+
+def test_matching_module_is_the_doi_mcp_copy():
+    """zotero_mcp/matching.py is vendored from the DOI MCP: the same rules must apply on both sides."""
+    from zotero_mcp import matching
+    assert matching.MATCHING_VERSION == 1 and matching.TITLE_THRESHOLD == 0.88
+    assert matching.eligible(matching.assess({"title": "Designerly ways of knowing", "authors": ["Nigel Cross"], "year": 1982},
+                                             "Designerly ways of knowing", "Cross", 1982))
+    assert not matching.eligible(matching.assess({"title": "Designerly ways of knowing", "authors": ["Nigel Cross"], "year": 1982},
+                                                 "Designerly ways of knowing", "Schön", 1982))

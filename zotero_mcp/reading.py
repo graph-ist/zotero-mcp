@@ -6,7 +6,7 @@ from typing import Annotated
 
 from pydantic import Field
 
-from . import api
+from . import api, matching
 from .core import ToolError, library_dois, public, tool
 from .pdf import pdf_or_ocr, pdf_attachment
 
@@ -173,20 +173,31 @@ def parse_reference(text: str) -> dict:
     return out
 
 
-async def crossref_lookup(entry: dict) -> str | None:
-    """DOI of a reference without one, from Crossref's bibliographic query; only a confident match
-    (same first author surname and year, high score) is accepted."""
+async def crossref_lookup(entry: dict) -> dict | None:
+    """DOI of a reference without one, from Crossref's bibliographic query, accepted under the
+    DOI MCP's rules (zotero_mcp/matching.py): title similarity over the threshold, the first
+    author's surname among the record's authors, year within one. Returns the candidate with
+    its title score, or None."""
+    _, year, title = matching.parse_ref(entry["text"])
+    if len(matching.title_words(title)) < 2:
+        return None
     r = await public().get("https://api.crossref.org/works", params={
-        "query.bibliographic": entry["text"][:250], "rows": 2, "select": "DOI,author,issued,score,title"})
+        "query.bibliographic": entry["text"][:250], "rows": 3,
+        "select": "DOI,author,issued,score,title,subtitle,type"})
     if r.status_code != 200:
         return None
+    best = None
     for w in r.json().get("message", {}).get("items", []):
-        family = (w.get("author") or [{}])[0].get("family", "").lower()
-        year = str(((w.get("issued") or {}).get("date-parts") or [[None]])[0][0] or "")
-        if w.get("score", 0) >= 60 and family and family in entry.get("first_author", "").lower() \
-                and (not entry.get("year") or year == entry["year"]):
-            return api.norm_doi(w["DOI"])
-    return None
+        cand = {"title": (w.get("title") or [None])[0], "subtitle": (w.get("subtitle") or [None])[0],
+                "authors": [a.get("family") or a.get("name") or "" for a in w.get("author") or []],
+                "year": ((w.get("issued") or {}).get("date-parts") or [[None]])[0][0], "type": w.get("type")}
+        if not cand["title"] or matching.is_derivative(cand, title):
+            continue
+        check = matching.assess(cand, title, entry.get("first_author"), year)
+        if matching.eligible(check) and (best is None or check["score"] > best["title_score"]):
+            best = {"doi": api.norm_doi(w["DOI"]), "title": cand["title"], "year": cand["year"],
+                    "title_score": check["score"]}
+    return best
 
 
 @tool
@@ -220,9 +231,9 @@ async def extract_references(
     for e in entries:
         if "doi" not in e and looked_up < resolve_missing:
             looked_up += 1
-            doi = await crossref_lookup(e)
-            if doi:
-                e["doi"], e["doi_source"] = doi, "crossref"
+            hit = await crossref_lookup(e)
+            if hit:
+                e["doi"], e["doi_source"], e["doi_title_score"] = hit["doi"], "crossref", hit["title_score"]
     index = await library_dois()
     for i, e in enumerate(entries, 1):
         e["n"] = i

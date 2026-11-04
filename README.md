@@ -91,7 +91,7 @@ ocr_worker.py run | scan | enqueue KEY [--replace] [--mode normal|rasterize|enha
 
 ## Library snapshot
 
-`snapshot.py` writes `/var/lib/knowledge/library.json` (items with key, DOI, title, creators, year, tags, collection paths and keys, PDF/EPUB attachments) for services that must not call the Zotero API, such as the DOI MCP's literature maps. The tool `refresh_library_snapshot` runs it on demand (the "Refresh library and notes" button of the Literature maps page). One conditional request tells whether the library changed; if it did, only the items changed or deleted since the last snapshot are fetched and merged. The server needs group `knowledge` and write access to `/var/lib/knowledge`.
+`snapshot.py` writes `/var/lib/knowledge/library.json` (items with key, DOI, title, creators, year, tags, collection paths and keys, PDF/EPUB attachments) for services that must not call the Zotero API, such as the DOI MCP's literature maps. The tool `refresh_library_snapshot` runs it on demand (the "Refresh library and notes" button of the Literature maps page). One conditional request tells whether the library changed; if it did, only the items changed or deleted since the last snapshot are fetched and merged. The server needs group `knowledge` and write access to `/var/lib/knowledge`. The file carries `schema_version` (1); the DOI MCP refuses a newer version instead of misreading it, so bump it only when a field changes meaning or is removed. A snapshot without the field is rebuilt in full once.
 
 ## Code layout
 
@@ -102,6 +102,7 @@ ocr_worker.py run | scan | enqueue KEY [--replace] [--mode normal|rasterize|enha
 - `core.py`: the FastMCP instance, the `tool` decorator (structured errors), async HTTP, caches (collections, item templates, the DOI index updated with `since=`), item helpers
 - `items.py`, `collections.py`, `pdf.py`, `ocr.py`: the tools by area
 - `transport.py`: stdio or HTTP with the token check
+- `matching.py`: a verbatim copy of the DOI MCP's `matching.py` (title similarity, surname and year rules, errata and replies), so `create_item_from_doi` and `extract_references` accept a record under the same rules as `find_doi` and `verify_doi`; update the two files together
 
 `ocr_worker.py` and `snapshot.py` stay at the root as the scripts the systemd units run.
 

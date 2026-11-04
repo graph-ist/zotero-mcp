@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.7.1 (2026-11-04)
+
+Fixed
+- Collections cache: the "never loaded" sentinel was `0.0` compared with `time.monotonic()` (seconds since boot), so for the first five minutes after a reboot the empty cache counted as fresh: `list_collections`, collection paths in `search_items` and `update_item_links` by collection saw no collections, and `create_collection` could not invalidate it. The sentinel is now `None`. The offline suite failed on a freshly booted machine for the same reason (6 tests).
+
+Changed
+- `create_item_from_doi` and `extract_references` (`resolve_missing`) compare records with `zotero_mcp/matching.py`, a copy of the DOI MCP's module: same title similarity (0.88 over subtitle variants), surname and year rules as `find_doi` and `verify_doi`, and derivative records (errata, reviews, replies) are refused. `extract_references` adds `doi_title_score` to a resolved entry. `find_duplicates` uses the same similarity for preprint pairs.
+- `library.json` carries `schema_version: 1`; a snapshot without it is rebuilt in full once.
+
 ## 0.7.0 (2026-11-04)
 
 Added

@@ -78,7 +78,12 @@ def test_extract_references(zot, call):
     put_webdav(att, "p.pdf", paper_pdf())
     cross = article(zot, title="Designerly ways of knowing", doi="10.1016/0142-694X(82)90040-0")
     zot.crossref_query = [{"DOI": "10.5555/reflective", "score": 90, "author": [{"family": "Schön"}],
-                           "issued": {"date-parts": [[1983]]}, "_match": ["reflective practitioner"]}]
+                           "title": ["The reflective practitioner: How professionals think in action"],
+                           "issued": {"date-parts": [[1983]]}, "_match": ["reflective practitioner"]},
+                          # same query hit, wrong work: a review carrying the title must not be accepted
+                          {"DOI": "10.5555/review", "score": 95, "author": [{"family": "Other"}],
+                           "title": ["Review of: The reflective practitioner"], "type": "journal-article",
+                           "issued": {"date-parts": [[1984]]}, "_match": ["reflective practitioner"]}]
     out = call("extract_references", key=k)
     assert out["section_found"] and out["counts"] == {"entries": 3, "with_doi": 2, "in_library": 1, "missing_with_doi": 1}
     e = out["entries"]
@@ -88,6 +93,7 @@ def test_extract_references(zot, call):
     assert out["missing_dois"] == ["10.7551/mitpress/12107.001.0001"]
     out = call("extract_references", key=k, resolve_missing=5)
     assert out["looked_up"] == 1 and out["entries"][1]["doi"] == "10.5555/reflective" and out["entries"][1]["doi_source"] == "crossref"
+    assert out["entries"][1]["doi_title_score"] >= 0.88
     assert out["counts"]["with_doi"] == 3
 
 

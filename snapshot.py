@@ -18,6 +18,9 @@ import time
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from zotero_mcp import api, config  # noqa: E402
 
+# Bumped when a field changes meaning or is removed; readers (the DOI MCP's knowledge.py) refuse a
+# newer major version instead of misreading it. Adding a field does not bump it.
+SCHEMA_VERSION = 1
 READABLE = ("application/pdf", "application/epub+zip")
 SKIP = ("attachment", "note", "annotation")
 
@@ -78,7 +81,8 @@ def _assemble(items: dict[str, dict], collections: list[dict], version: int) -> 
     rows = []
     for it in sorted(items.values(), key=lambda i: i["key"]):
         rows.append({**it, "collections": [path(k) for k in it["collection_keys"] if k in names]})
-    return {"generated": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()), "library_version": version,
+    return {"schema_version": SCHEMA_VERSION, "generated": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+            "library_version": version,
             "items": rows, "collections": sorted(path(k) for k in names)}
 
 
@@ -110,7 +114,7 @@ def refresh(force: bool = False) -> dict:
             old = json.load(open(out))
         except ValueError:
             old = None
-    incremental = bool(old and old.get("library_version") is not None
+    incremental = bool(old and old.get("library_version") is not None and old.get("schema_version") == SCHEMA_VERSION
                        and all("collection_keys" in i for i in old["items"]))
     try:
         if incremental and not client.changed_since(int(old["library_version"])):

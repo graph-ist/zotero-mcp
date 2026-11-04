@@ -6,7 +6,7 @@ from typing import Annotated, Any, Literal
 import httpx
 from pydantic import Field
 
-from . import api, config
+from . import api, config, matching
 from .pdf import _norm_word
 from .core import (ToolError, collections, creators, fail, fetch_item, children, items_by_keys, key_of,
                    library_dois, paginate, patch, post_items, post_updates, req, strip_html, summary,
@@ -166,38 +166,36 @@ def _cr_year(m: dict) -> int | None:
     return None
 
 
-def _title_similarity(a: str | None, b: str | None) -> float:
-    """Share of the shorter title's words found in the other (subtitles and word order ignored)."""
-    ta = {w for w in _norm_title(a).split() if len(w) > 2}
-    tb = {w for w in _norm_title(b).split() if len(w) > 2}
-    if not ta or not tb:
-        return 0.0
-    return len(ta & tb) / min(len(ta), len(tb))
-
-
 async def _check_doi_record(m, doi, title, exp_title, exp_author, exp_year) -> tuple[list[str], list[str]]:
-    """Problems block creation (mismatch with what the caller expects, retraction); warnings don't."""
+    """Problems block creation (mismatch with what the caller expects, retraction); warnings don't.
+
+    The comparison is the DOI MCP's (zotero_mcp/matching.py, a copy of its matching.py): same
+    title similarity, surname and year rules as find_doi and verify_doi."""
     from .core import public
     problems, warnings = [], []
     if not title:
         problems.append("the Crossref record has no title")
-    if exp_title and _title_similarity(exp_title, title) < 0.6:
-        problems.append(f"title mismatch: expected {exp_title!r}, the DOI is {title!r}")
     people = [a.get("family") or a.get("name") or "" for a in (m.get("author") or []) + (m.get("editor") or [])]
-    if exp_author:
-        name = exp_author.split(",")[0] if "," in exp_author else (exp_author.split() or [""])[-1]
-        want = _norm_word(name)
-        if people and not any(want and want in _norm_word(p) for p in people):
-            problems.append(f"author mismatch: expected {exp_author!r}, the DOI's authors are {people[:5]}")
     year = _cr_year(m)
-    if exp_year and year and abs(int(exp_year) - year) > 1:
+    cand = {"title": title, "subtitle": (m.get("subtitle") or [None])[0], "authors": people, "year": year,
+            "type": m.get("type")}
+    check = matching.assess(cand, exp_title or title or "", exp_author, exp_year)
+    if exp_title and check["score"] < matching.TITLE_THRESHOLD:
+        problems.append(f"title mismatch: expected {exp_title!r}, the DOI is {title!r} (similarity {check['score']})")
+    if exp_author and check["author_ok"] is False:
+        problems.append(f"author mismatch: expected {exp_author!r}, the DOI's authors are {people[:5]}")
+    if exp_year and check["year_ok"] is False:
         problems.append(f"year mismatch: expected {exp_year}, the DOI is {year}")
+    if exp_title and not problems and not matching.eligible(check):
+        warnings.append("short title: pass expected_first_author so the match can be confirmed")
     if not people:
         warnings.append("no authors in the Crossref record")
     if m.get("type") in ("peer-review", "component", "dataset", "journal-issue", "journal"):
         warnings.append(f"the DOI is a {m.get('type')!r}, not a publication")
+    if exp_title and matching.is_derivative(cand, exp_title):
+        problems.append(f"the DOI is a derivative record (erratum, review, reply) of {exp_title!r}, not the work")
     # a retracted article lists its notices in 'updated-by' (Crossref + Retraction Watch)
-    retracted = bool(re.match(r"\s*(retracted|withdrawn)\b", title or "", re.I)) or any(
+    retracted = bool(matching.RETRACTED_PREFIX_RE.match(title or "")) or any(
         u.get("type") in ("retraction", "withdrawal") for u in m.get("updated-by") or [])
     try:
         r = await public().get(f"https://api.openalex.org/works/doi:{doi}",
@@ -484,7 +482,7 @@ def _preprint_pairs(items: list[dict]) -> list[tuple[dict, dict]]:
                 continue
             if yp and yo and abs(yp - yo) > 3:
                 continue
-            if _title_similarity(p["data"].get("title"), o["data"].get("title")) >= 0.8:
+            if matching.title_sim(p["data"].get("title") or "", o["data"].get("title"))[0] >= matching.TITLE_THRESHOLD:
                 out.append((p, o))
     return out
 
