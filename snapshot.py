@@ -1,57 +1,70 @@
+#!/usr/bin/env python3
 """Write a snapshot of the Zotero library to KNOWLEDGE_DIR/library.json for other services on
 the Pi (DOI MCP literature maps, knowledge views) that must not call the Zotero API.
 
 Items (no notes, annotations or attachments as items) with key, type, title, creators, year,
-DOI (also "DOI:" lines in Extra), ISBN, tags, collection paths and PDF/EPUB attachment keys.
-Nothing is written when the library version has not changed since the last snapshot.
-Run by the MCP tool refresh_library_snapshot (the "Refresh library and notes" button of the
-Literature maps page) or by hand: snapshot.py [--force]. Env: ZOTERO_USER_ID, ZOTERO_API_KEY, KNOWLEDGE_DIR
+DOI (also "DOI:" lines in Extra), ISBN, tags, collection paths and keys, PDF/EPUB attachment keys.
+Nothing is written when the library version has not changed since the last snapshot; otherwise
+only the items changed or deleted since then are fetched and merged into the previous snapshot.
+Run by the MCP tool refresh_library_snapshot or by hand: snapshot.py [--force].
+Env: ZOTERO_USER_ID, ZOTERO_API_KEY, KNOWLEDGE_DIR
 """
 import json
 import os
 import re
 import sys
 import time
-import urllib.error
-import urllib.request
 
-OUT_DIR = os.environ.get("KNOWLEDGE_DIR", "/var/lib/knowledge")
-OUT = os.path.join(OUT_DIR, "library.json")
-BASE = f"https://api.zotero.org/users/{os.environ.get('ZOTERO_USER_ID', '')}"
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from zotero_mcp import api, config  # noqa: E402
 
-
-def get(path: str, since: int | None = None) -> tuple[int, list | dict, dict]:
-    headers = {"Zotero-API-Key": os.environ.get("ZOTERO_API_KEY", ""), "Zotero-API-Version": "3"}
-    if since is not None:
-        headers["If-Modified-Since-Version"] = str(since)
-    req = urllib.request.Request(BASE + path, headers=headers)
-    try:
-        with urllib.request.urlopen(req, timeout=60) as r:
-            return r.status, json.load(r), dict(r.headers)
-    except urllib.error.HTTPError as e:
-        if e.code == 304:
-            return 304, [], dict(e.headers)
-        raise
+READABLE = ("application/pdf", "application/epub+zip")
+SKIP = ("attachment", "note", "annotation")
 
 
-def all_pages(path: str) -> tuple[list, int]:
-    out, start, version = [], 0, 0
-    while True:
-        sep = "&" if "?" in path else "?"
-        _, page, headers = get(f"{path}{sep}limit=100&start={start}")
-        version = int(headers.get("Last-Modified-Version", version))
-        out += page
-        start += len(page)
-        if len(page) < 100 or start >= int(headers.get("Total-Results", start)):
-            return out, version
+def out_path() -> str:
+    return os.path.join(config.KNOWLEDGE_DIR, "library.json")
 
 
-def norm_doi(d: str) -> str:
-    return re.sub(r"^(https?://(dx\.)?doi\.org/|doi:\s*)", "", d.strip(), flags=re.I).rstrip(".").lower()
+def entry(d: dict, attachments: list | None = None) -> dict:
+    dois = api.item_dois(d)
+    year = re.search(r"\d{4}", d.get("date") or "")
+    return {"key": d["key"], "type": d["itemType"], "title": d.get("title") or "",
+            "creators": [c.get("lastName") or c.get("name") or "" for c in d.get("creators", [])],
+            "year": int(year.group(0)) if year else None,
+            "doi": api.norm_doi(d["DOI"]) if d.get("DOI") else None,
+            "extra_dois": [x for x in dois if x != api.norm_doi(d.get("DOI") or "")],
+            "isbn": d.get("ISBN") or None, "language": d.get("language") or None,
+            "tags": [t["tag"] for t in d.get("tags", [])],
+            "collection_keys": list(d.get("collections", [])),
+            "attachments": attachments or []}
 
 
-def build() -> dict:
-    collections, _ = all_pages("/collections")
+def _apply(items: dict[str, dict], objects: list[dict], deleted: list[str]) -> None:
+    """Merge changed and deleted objects into items (key -> entry)."""
+    gone = set(deleted)
+    for o in objects:
+        d = o["data"]
+        if d.get("deleted"):
+            gone.add(d["key"])
+    for k in gone:
+        items.pop(k, None)
+    for it in items.values():
+        it["attachments"] = [a for a in it["attachments"] if a["key"] not in gone]
+    changed = [o["data"] for o in objects if not o["data"].get("deleted")]
+    for d in changed:  # regular items first, so attachments of new items find their parent
+        if d["itemType"] not in SKIP:
+            items[d["key"]] = entry(d, items.get(d["key"], {}).get("attachments"))
+    for d in changed:
+        if d["itemType"] == "attachment":
+            for it in items.values():
+                it["attachments"] = [a for a in it["attachments"] if a["key"] != d["key"]]
+            parent = items.get(d.get("parentItem") or "")
+            if parent is not None and d.get("contentType") in READABLE:
+                parent["attachments"].append({"key": d["key"], "contentType": d["contentType"]})
+
+
+def _assemble(items: dict[str, dict], collections: list[dict], version: int) -> dict:
     names = {c["key"]: (c["data"]["name"], c["data"].get("parentCollection") or None) for c in collections}
 
     def path(key: str) -> str:
@@ -62,56 +75,61 @@ def build() -> dict:
             key = names[key][1]
         return " › ".join(reversed(parts))
 
-    objects, version = all_pages("/items")
-    attachments: dict[str, list] = {}
-    for o in objects:
-        d = o["data"]
-        if d["itemType"] == "attachment" and d.get("parentItem") and d.get("contentType") in (
-                "application/pdf", "application/epub+zip"):
-            attachments.setdefault(d["parentItem"], []).append({"key": d["key"], "contentType": d["contentType"]})
-    items = []
-    for o in objects:
-        d = o["data"]
-        if d["itemType"] in ("attachment", "note", "annotation"):
-            continue
-        extra = [norm_doi(x) for x in re.findall(r"^DOI:\s*(\S+)", d.get("extra") or "", re.M | re.I)]
-        year = re.search(r"\d{4}", d.get("date") or "")
-        items.append({
-            "key": d["key"], "type": d["itemType"], "title": d.get("title") or "",
-            "creators": [c.get("lastName") or c.get("name") or "" for c in d.get("creators", [])],
-            "year": int(year.group(0)) if year else None,
-            "doi": norm_doi(d["DOI"]) if d.get("DOI") else None, "extra_dois": extra,
-            "isbn": d.get("ISBN") or None, "language": d.get("language") or None,
-            "tags": [t["tag"] for t in d.get("tags", [])],
-            "collections": [path(k) for k in d.get("collections", [])],
-            "attachments": attachments.get(d["key"], [])})
+    rows = []
+    for it in sorted(items.values(), key=lambda i: i["key"]):
+        rows.append({**it, "collections": [path(k) for k in it["collection_keys"] if k in names]})
     return {"generated": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()), "library_version": version,
-            "items": items, "collections": sorted(path(k) for k in names)}
+            "items": rows, "collections": sorted(path(k) for k in names)}
+
+
+def build(client: api.Client) -> dict:
+    objects, version = client.paginate("/items")
+    items: dict[str, dict] = {}
+    _apply(items, objects, [])
+    collections, _ = client.paginate("/collections")
+    return _assemble(items, collections, version)
+
+
+def update(client: api.Client, old: dict) -> dict:
+    since = int(old["library_version"])
+    objects, version = client.paginate("/items", {"since": since, "includeTrashed": 1})
+    deleted = client.deleted_since(since).get("items", [])
+    items = {i["key"]: i for i in old["items"]}
+    _apply(items, objects, deleted)
+    collections, _ = client.paginate("/collections")
+    return _assemble(items, collections, max(version, since))
 
 
 def refresh(force: bool = False) -> dict:
-    """Rebuild library.json unless the library version is unchanged; returns a summary."""
-    old_version = None
-    if os.path.exists(OUT) and not force:
+    """Bring library.json up to date; returns a summary."""
+    client = api.Client()
+    out = out_path()
+    old = None
+    if os.path.exists(out) and not force:
         try:
-            old_version = json.load(open(OUT)).get("library_version")
+            old = json.load(open(out))
         except ValueError:
-            pass
-    if old_version is not None:
-        status, _, _ = get("/items?limit=1&format=keys", since=old_version)
-        if status == 304:
-            return {"status": "unchanged", "library_version": old_version}
-    snap = build()
+            old = None
+    incremental = bool(old and old.get("library_version") is not None
+                       and all("collection_keys" in i for i in old["items"]))
+    try:
+        if incremental and not client.changed_since(int(old["library_version"])):
+            return {"status": "unchanged", "library_version": old["library_version"]}
+        snap = update(client, old) if incremental else build(client)
+    finally:
+        client.close()
     old_umask = os.umask(0o027)
     try:
-        tmp = OUT + ".tmp"
+        os.makedirs(config.KNOWLEDGE_DIR, exist_ok=True)
+        tmp = out + ".tmp"
         with open(tmp, "w", encoding="utf-8") as f:
             json.dump(snap, f, ensure_ascii=False)
-        os.replace(tmp, OUT)
+        os.replace(tmp, out)
     finally:
         os.umask(old_umask)
-    return {"status": "written", "items": len(snap["items"]), "collections": len(snap["collections"]),
-            "library_version": snap["library_version"], "generated": snap["generated"]}
+    return {"status": "updated" if incremental else "written", "items": len(snap["items"]),
+            "collections": len(snap["collections"]), "library_version": snap["library_version"],
+            "generated": snap["generated"]}
 
 
 def main() -> None:

@@ -6,7 +6,7 @@ os.environ.setdefault("ZOTERO_USER_ID", "0")
 os.environ.setdefault("ZOTERO_API_KEY", "x")
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import pymupdf  # noqa: E402
-from server import _locate  # noqa: E402
+from zotero_mcp.pdf import locate as _locate  # noqa: E402
 
 doc = pymupdf.open()
 p1 = doc.new_page(width=595, height=842)
@@ -40,21 +40,23 @@ print("ALL OK")
 # Size cap: a PDF inside a zip is returned, and refused once it exceeds the limit
 import tempfile  # noqa: E402
 import zipfile  # noqa: E402
-import server  # noqa: E402
+from zotero_mcp import config  # noqa: E402
+from zotero_mcp.core import ToolError  # noqa: E402
+from zotero_mcp.pdf import pdf_bytes  # noqa: E402
 
-_saved = server.WEBDAV_DIR, server.MAX_PDF_BYTES
+_saved = config.WEBDAV_DIR, config.MAX_PDF_BYTES
 try:
     with tempfile.TemporaryDirectory() as d:
-        server.WEBDAV_DIR = d
+        config.WEBDAV_DIR = d
         with zipfile.ZipFile(os.path.join(d, "ABCD2345.zip"), "w") as z:
             z.writestr("x.pdf", data)
-        assert server._pdf_bytes("ABCD2345") == data
-        server.MAX_PDF_BYTES = len(data) - 1
+        assert pdf_bytes("ABCD2345") == data
+        config.MAX_PDF_BYTES = len(data) - 1
         try:
-            server._pdf_bytes("ABCD2345")
+            pdf_bytes("ABCD2345")
             raise AssertionError("cap not enforced")
-        except server.ToolError:
+        except ToolError:
             pass
 finally:
-    server.WEBDAV_DIR, server.MAX_PDF_BYTES = _saved
+    config.WEBDAV_DIR, config.MAX_PDF_BYTES = _saved
 print("size cap ok")

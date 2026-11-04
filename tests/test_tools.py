@@ -4,10 +4,10 @@ import os
 
 import pytest
 
-import server
+from zotero_mcp import config, core
 from conftest import article, make_pdf, put_webdav, run
 
-OCR = server.OCR_DIR
+OCR = config.OCR_DIR
 
 
 # ---- search and read -------------------------------------------------------------------------
@@ -382,25 +382,66 @@ def test_unexpected_exception_becomes_structured_error(zot, call, monkeypatch):
     k = article(zot)
     async def boom(*a, **kw):
         raise RuntimeError("socket closed")
-    monkeypatch.setattr(server, "_get_item", boom)
+    monkeypatch.setattr(core, "req", boom)
     out = call("get_item", key=k)
-    assert out["status"] == "error" and "RuntimeError" in out["detail"]
+    assert out["status"] == "error" and "RuntimeError" in out["detail"] and "retry" in out["hint"]
 
 
 def test_retry_on_429(zot, call):
     k = article(zot)
-    orig, hits = zot.handler, {"n": 0}
-    def flaky(req):
-        hits["n"] += 1
-        if hits["n"] == 1:
-            import httpx
-            return httpx.Response(429, headers={"Retry-After": "0"})
-        return orig(req)
-    import httpx
-    server._zot = httpx.AsyncClient(transport=httpx.MockTransport(flaky), headers={"Zotero-API-Version": "3", "Zotero-API-Key": "k"})
+    zot.fail_next = [429, 503]
     assert call("get_item", key=k)["item"]["key"] == k
 
 
+def test_doi_index_is_incremental(zot, call):
+    a = article(zot, doi="10.1/a")
+    assert call("find_dois", dois=["10.1/a"])["missing"] == []
+    n = len(zot.calls)
+    b = article(zot, title="B", doi="10.1/b")
+    zot.items[a]["data"]["DOI"] = "10.1/a2"
+    zot.items[a]["version"] = zot.items[a]["data"]["version"] = zot._bump()
+    out = call("find_dois", dois=["10.1/a", "10.1/a2", "10.1/b"])
+    assert out["missing"] == ["10.1/a"] and out["in_library"]["10.1/b"]["key"] == b
+    assert [c for c in zot.calls[n:] if "since=" in c[1]] and not any("start=100" in c[1] for c in zot.calls[n:])
+    del zot.items[b]
+    zot.deleted.append((zot._bump(), b))
+    assert call("find_dois", dois=["10.1/b"])["missing"] == ["10.1/b"]
+    call("trash_item", key=a)
+    assert call("find_dois", dois=["10.1/a2"])["missing"] == ["10.1/a2"]
+
+
+def test_refresh_library_snapshot_full_then_incremental(zot, call):
+    import snapshot
+    c = zot.add_collection("Phil")
+    a = article(zot, doi="10.1/a", collections=[c], tags=["read"])
+    zot.add_item("attachment", parentItem=a, contentType="application/pdf")
+    out = call("refresh_library_snapshot")
+    assert out["status"] == "written" and out["items"] == 1
+    snap = json.load(open(snapshot.out_path()))
+    assert snap["items"][0]["collections"] == ["Phil"] and snap["items"][0]["attachments"][0]["contentType"] == "application/pdf"
+    assert call("refresh_library_snapshot")["status"] == "unchanged"
+    n = len(zot.calls)
+    b = article(zot, title="B", doi="", extra="DOI: 10.1/b")
+    zot.collections[c]["data"]["name"] = "Philosophy"
+    call("trash_item", key=a)
+    out = call("refresh_library_snapshot")
+    assert out["status"] == "updated" and out["items"] == 1
+    snap = json.load(open(snapshot.out_path()))
+    assert snap["items"][0]["key"] == b and snap["items"][0]["extra_dois"] == ["10.1/b"]
+    assert snap["collections"] == ["Philosophy"] and any("since=" in x[1] for x in zot.calls[n:])
+
+
 def test_tool_count_and_names():
-    names = sorted(t.name for t in run(server.mcp.list_tools()))
+    names = sorted(t.name for t in run(core.mcp.list_tools()))
     assert len(names) == 32 and "update_item_links" in names and "set_item_collections" not in names
+
+
+def test_worker_uses_shared_client(zot):
+    import ocr_worker as w
+    w._client = None
+    k = article(zot, language="it-IT")
+    att = zot.add_item("attachment", parentItem=k, contentType="application/pdf")
+    assert w.languages(att) == "ita" and w.languages("ZZZZZZZZ") == w.LANGS
+    w.sync_file_metadata(att, "d41d8cd98f00b204e9800998ecf8427e", 1700000000000)
+    assert zot.items[att]["data"]["md5"] == "d41d8cd98f00b204e9800998ecf8427e"
+    w._client = None

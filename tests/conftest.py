@@ -22,7 +22,8 @@ os.environ.update(ZOTERO_USER_ID="1", ZOTERO_API_KEY="test-key",
 os.makedirs(os.environ["ZOTERO_WEBDAV_DIR"])
 os.makedirs(os.environ["KNOWLEDGE_DIR"])
 
-import server  # noqa: E402
+import server  # noqa: E402,F401  (the entry point must import)
+from zotero_mcp import api, config, core  # noqa: E402
 from fake_zotero import FakeZotero  # noqa: E402
 
 
@@ -32,25 +33,20 @@ def run(coro):
 
 @pytest.fixture
 def zot():
-    """A fresh fake library wired into the server's HTTP clients and caches."""
+    """A fresh fake library behind every HTTP client of the package, caches cleared."""
     fake = FakeZotero()
-    server._zot = httpx.AsyncClient(transport=httpx.MockTransport(fake.handler),
-                                    headers={"Zotero-API-Version": "3", "Zotero-API-Key": "test-key"})
-    server._pub = httpx.AsyncClient(transport=httpx.MockTransport(fake.public_handler), follow_redirects=True)
-    server._invalidate_collections()
-    server._doi_index.update(version=None, items={})
-    server._templates.clear()
+    api.TRANSPORT = httpx.MockTransport(fake.dispatch)
+    core.reset_clients()
     yield fake
-    run(server._zot.aclose())
-    run(server._pub.aclose())
-    server._zot = server._pub = None
+    core.reset_clients()
+    api.TRANSPORT = None
 
 
 @pytest.fixture
 def call():
     """call('tool', **args) -> the tool's dict result."""
     def _call(_name: str, **args):
-        res = run(server.mcp.call_tool(_name, args))
+        res = run(core.mcp.call_tool(_name, args))
         if isinstance(res, dict):
             return res
         if isinstance(res, tuple):  # (content blocks, structured)
@@ -72,7 +68,7 @@ def make_pdf(pages: list[str]) -> bytes:
 
 
 def put_webdav(att_key: str, member: str, data: bytes) -> str:
-    path = os.path.join(server.WEBDAV_DIR, f"{att_key}.zip")
+    path = os.path.join(config.WEBDAV_DIR, f"{att_key}.zip")
     with zipfile.ZipFile(path, "w") as z:
         z.writestr(member, data)
     return path

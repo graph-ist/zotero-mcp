@@ -57,6 +57,15 @@ class FakeZotero:
         self.crossref: dict[str, dict] = {}     # doi -> Crossref "message"
         self.openalex: dict[str, dict] = {}     # doi -> OpenAlex work
         self.urls: dict[str, tuple[int, bytes, str]] = {}  # url -> (status, body, content-type)
+        self.fail_next: list[int] = []  # HTTP statuses to answer with before serving (tests retry)
+
+    def dispatch(self, request: httpx.Request) -> httpx.Response:
+        """One transport for both the Zotero API and the public APIs."""
+        if self.fail_next:
+            return httpx.Response(self.fail_next.pop(0), headers={"Retry-After": "0"})
+        if request.url.host == "api.zotero.org":
+            return self.handler(request)
+        return self.public_handler(request)
 
     # ---- library setup ----------------------------------------------------------------------
     def _bump(self) -> int:
@@ -309,10 +318,12 @@ class FakeZotero:
                 if k in self.on_get:
                     self.on_get.pop(k)()
                 return httpx.Response(200, json=out, headers={"Last-Modified-Version": str(it["version"])})
+            body = json.loads(request.content) if m == "PATCH" else {}
+            if unmod is None and "version" in body:  # the API also accepts the version inside the object
+                unmod = str(body.pop("version"))
             if unmod is None or int(unmod) != it["version"]:
                 return httpx.Response(412, text="Item has been modified since specified version")
             if m == "PATCH":
-                body = json.loads(request.content)
                 for f, v in body.items():
                     if f == "deleted":
                         if v:

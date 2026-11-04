@@ -89,7 +89,19 @@ ocr_worker.py run | scan | enqueue KEY [--replace] [--mode normal|rasterize|enha
 
 ## Library snapshot
 
-`snapshot.py` writes `/var/lib/knowledge/library.json` (items with key, DOI, title, creators, year, tags, collection paths, PDF/EPUB attachments) for services that must not call the Zotero API, such as the DOI MCP's literature maps. The tool `refresh_library_snapshot` runs it on demand (the "Refresh library and notes" button of the Literature maps page); it does nothing when the library version is unchanged. The server needs group `knowledge` and write access to `/var/lib/knowledge`.
+`snapshot.py` writes `/var/lib/knowledge/library.json` (items with key, DOI, title, creators, year, tags, collection paths and keys, PDF/EPUB attachments) for services that must not call the Zotero API, such as the DOI MCP's literature maps. The tool `refresh_library_snapshot` runs it on demand (the "Refresh library and notes" button of the Literature maps page). One conditional request tells whether the library changed; if it did, only the items changed or deleted since the last snapshot are fetched and merged. The server needs group `knowledge` and write access to `/var/lib/knowledge`.
+
+## Code layout
+
+`server.py` is the entry point; the code is the `zotero_mcp` package:
+
+- `api.py`: everything about api.zotero.org shared by the server, the worker and the snapshot: base URL and headers, retry policy on 429/503, error hints, key and DOI helpers, a synchronous client
+- `config.py`: settings from the environment
+- `core.py`: the FastMCP instance, the `tool` decorator (structured errors), async HTTP, caches (collections, item templates, the DOI index updated with `since=`), item helpers
+- `items.py`, `collections.py`, `pdf.py`, `ocr.py`: the tools by area
+- `transport.py`: stdio or HTTP with the token check
+
+`ocr_worker.py` and `snapshot.py` stay at the root as the scripts the systemd units run.
 
 ## Deployment
 

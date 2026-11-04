@@ -23,15 +23,18 @@ import shutil
 import subprocess
 import sys
 import time
-import urllib.request
 import zipfile
 
-WEBDAV = os.environ.get("ZOTERO_WEBDAV_DIR", "/srv/zotero-webdav/zotero")
-ROOT = os.environ.get("ZOTERO_OCR_DIR", "/var/lib/zotero-mcp/ocr")
-LANGS = os.environ.get("ZOTERO_OCR_LANGS", "eng+ita")
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from zotero_mcp import api as zotero_api  # noqa: E402
+from zotero_mcp import config  # noqa: E402
+
+WEBDAV = config.WEBDAV_DIR
+ROOT = config.OCR_DIR
+LANGS = config.OCR_LANGS
 QUEUE, STATUS, CACHE, WORK, INCOMING = (os.path.join(ROOT, d) for d in ("queue", "status", "cache", "work", "incoming"))
 ORIGINALS = os.path.join(os.path.dirname(ROOT), "originals")
-MAX_PDF_BYTES = int(os.environ.get("ZOTERO_MAX_PDF_MB", "200")) * 1024 * 1024
+MAX_PDF_BYTES = config.MAX_PDF_BYTES
 KEY_RE = re.compile(r"[A-Z0-9]{8}")
 TEXT_CHARS = 50          # a page with fewer characters counts as image only
 NATIVE_SHARE = 0.7       # documents with text on this share of pages are left alone
@@ -56,17 +59,16 @@ def set_status(key: str, **fields) -> dict:
     return data
 
 
+_client: zotero_api.Client | None = None
+
+
 def api(method: str, path: str, body: dict | None = None) -> tuple[int, bytes]:
-    req = urllib.request.Request(
-        f"https://api.zotero.org/users/{os.environ['ZOTERO_USER_ID']}{path}", method=method,
-        data=json.dumps(body).encode() if body is not None else None,
-        headers={"Zotero-API-Key": os.environ["ZOTERO_API_KEY"], "Zotero-API-Version": "3",
-                 "Content-Type": "application/json"})
-    try:
-        with urllib.request.urlopen(req, timeout=60) as r:
-            return r.status, r.read()
-    except urllib.error.HTTPError as e:
-        return e.code, e.read()
+    """(status, body) from the Zotero API; retries on 429/503 like the server (zotero_mcp.api)."""
+    global _client
+    if _client is None:
+        _client = zotero_api.Client()
+    r = _client.request(method, path, json=body)
+    return r.status_code, r.content
 
 
 def read_pdf(key: str) -> tuple[str, bytes] | None:
