@@ -107,6 +107,8 @@ ocr_worker.py run | scan | enqueue KEY [--replace] [--mode normal|rasterize|enha
 
 ## Deployment
 
+Versions are listed in `CHANGELOG.md`.
+
 The repository includes the files used to run the server on a Raspberry Pi (Debian) and expose it through Tailscale Funnel. Paths, the user name and the LAN range are specific to that setup and need adapting.
 
 Unit files and the firewall are in `deploy/`.

@@ -236,14 +236,13 @@ async def get_fulltext(
         text, source = await asyncio.to_thread(page_text, att_key, pages), "webdav_pdf_pages"
         if text is None:
             raise ToolError("PDF not found on WebDAV: sync files from Zotero desktop first")
-    r = None if text is not None else await req("GET", f"/items/{att_key}/fulltext")
-    if text is not None:
-        pass
-    elif r.status_code == 200 and r.json().get("content"):
-        text, source = r.json()["content"], "zotero_fulltext_index"
-    else:
-        text, ocr = await asyncio.to_thread(text_from_webdav, att_key, content_type)
-        source = "webdav_epub" if content_type == "application/epub+zip" else "webdav_pdf"
+    if text is None:
+        r = await req("GET", f"/items/{att_key}/fulltext")
+        if r.status_code == 200 and r.json().get("content"):
+            text, source = r.json()["content"], "zotero_fulltext_index"
+        else:
+            text, ocr = await asyncio.to_thread(text_from_webdav, att_key, content_type)
+            source = "webdav_epub" if content_type == "application/epub+zip" else "webdav_pdf"
     note = ({"ocr": ocr, "ocr_note": "Scanned PDF: OCR runs in the background (minutes to hours, see "
              "ocr_status); the text below is what the scan has now."} if ocr else {})
     if not text and not ocr:
