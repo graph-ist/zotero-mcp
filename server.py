@@ -26,7 +26,7 @@ from mcp.server.fastmcp import FastMCP
 from mcp.server.transport_security import TransportSecuritySettings
 from pydantic import Field
 
-VERSION = "0.5.0"
+VERSION = "0.6.0"
 USER_ID = os.environ.get("ZOTERO_USER_ID", "")
 API_KEY = os.environ.get("ZOTERO_API_KEY", "")
 WEBDAV_DIR = os.environ.get("ZOTERO_WEBDAV_DIR", "/srv/zotero-webdav/zotero")
@@ -350,6 +350,10 @@ async def _pdf_attachment(key: str) -> dict:
     return pdfs[0]
 
 
+_COLORS = {"yellow": "#ffd400", "red": "#ff6666", "green": "#5fb236", "blue": "#2ea8e5",
+           "purple": "#a28ae5", "magenta": "#e56eee", "orange": "#f19837", "gray": "#aaaaaa"}
+
+
 @mcp.tool()
 @_tool
 async def annotate_pdf(
@@ -357,9 +361,7 @@ async def annotate_pdf(
     text: Annotated[str, Field(description="Exact passage to mark, as it appears in the PDF")],
     type: Literal["highlight", "underline"] = "highlight",
     comment: Annotated[str | None, Field(description="Comment shown with the annotation")] = None,
-    color: Annotated[str, Field(description="Hex color; Zotero palette: #ffd400 yellow, #ff6666 red, "
-                                "#5fb236 green, #2ea8e5 blue, #a28ae5 purple, #e56eee magenta, "
-                                "#f19837 orange, #aaaaaa gray")] = "#ffd400",
+    color: Literal["yellow", "red", "green", "blue", "purple", "magenta", "orange", "gray"] = "yellow",
     page: Annotated[int | None, Field(ge=1, description="1-based page to search; default all pages")] = None,
     occurrence: Annotated[int, Field(ge=0, description="Which match to use if the text appears more than once")] = 0,
     tags: list[str] | None = None,
@@ -369,8 +371,6 @@ async def annotate_pdf(
 
     The PDF file itself is not modified. Needs the PDF on WebDAV with text; scans work once ocr_pdf
     has processed them (the OCR copy has the same page geometry)."""
-    if not re.fullmatch(r"#[0-9a-fA-F]{6}", color):
-        raise ToolError("color must be #RRGGBB")
     att = await _pdf_attachment(key)
     data = await asyncio.to_thread(_pdf_bytes, att["key"])
     if data is None:
@@ -388,7 +388,7 @@ async def annotate_pdf(
                 "lines": len(loc["rects"])}
     ann = {"itemType": "annotation", "parentItem": att["key"], "annotationType": type,
            "annotationText": " ".join(text.split()), "annotationComment": comment or "",
-           "annotationColor": color.lower(), "annotationPageLabel": loc["pageLabel"],
+           "annotationColor": _COLORS[color], "annotationPageLabel": loc["pageLabel"],
            "annotationSortIndex": loc["sortIndex"],
            "annotationPosition": json.dumps({"pageIndex": loc["pageIndex"], "rects": loc["rects"]},
                                             separators=(",", ":")),
@@ -421,8 +421,8 @@ async def ocr_pdf(
 @mcp.tool()
 @_tool
 async def refresh_library_snapshot() -> dict:
-    """Rewrite the library snapshot (/var/lib/knowledge/library.json) that the DOI MCP's literature
-    maps read for 'in Zotero', Zotero keys and tags. Does nothing when the library is unchanged."""
+    """Update the library index that the DOI server uses to flag which papers are already in Zotero
+    (keys and tags). Call it after adding or changing many items; a no-op if nothing changed."""
     import snapshot
     return await asyncio.to_thread(snapshot.refresh)
 
@@ -453,7 +453,9 @@ async def search_items(
         = "titleCreatorYear",
     collection_key: Annotated[str | None, Field(description="Restrict to one collection (see list_collections)")] = None,
     tag: Annotated[str | None, Field(description="Restrict to items with this tag")] = None,
-    item_type: Annotated[str | None, Field(description="e.g. journalArticle, book, conferencePaper")] = None,
+    item_type: Annotated[str | None, Field(description="Zotero itemType in camelCase, e.g. journalArticle, "
+                                           "book, bookSection, conferencePaper, thesis, report, webpage; "
+                                           "an unknown type is rejected")] = None,
     sort: Literal["dateModified", "dateAdded", "title", "creator", "date"] = "dateModified",
     limit: Annotated[int, Field(ge=1, le=100)] = 25,
     start: Annotated[int, Field(ge=0)] = 0,
@@ -467,6 +469,7 @@ async def search_items(
     if tag:
         params["tag"] = tag
     if item_type:
+        await _template(item_type)  # rejects unknown types instead of returning nothing
         params["itemType"] = item_type
     r = await _req("GET", path, params=params)
     if r.status_code != 200:
@@ -804,7 +807,7 @@ async def update_item(
     fields: Annotated[dict[str, Any], Field(description="Only the fields to change, e.g. {'date': '2016'}; "
                                             "'creators' replaces the whole author list")],
 ) -> dict:
-    """Change metadata fields of an item. Use set_item_collections / update_item_tags for those."""
+    """Change metadata fields of an item. Use update_item_links for tags and collections."""
     it = await _get_item(key)
     blocked = {"key", "version", "itemType", "collections", "tags", "deleted", "parentItem"} & set(fields)
     if blocked:
@@ -817,37 +820,34 @@ async def update_item(
 
 @mcp.tool()
 @_tool
-async def set_item_collections(
+async def update_item_links(
     key: str,
-    add: list[str] | None = None,
-    remove: list[str] | None = None,
+    add_tags: list[str] | None = None,
+    remove_tags: list[str] | None = None,
+    add_collections: Annotated[list[str] | None, Field(description="Collection keys (see list_collections)")] = None,
+    remove_collections: list[str] | None = None,
 ) -> dict:
-    """Add an item to and/or remove it from collections. The item and its PDF are never deleted."""
+    """Add and/or remove tags and collections on one item. For many items use update_items_batch;
+    for other metadata use update_item. The item and its PDF are never deleted."""
+    if not any((add_tags, remove_tags, add_collections, remove_collections)):
+        raise ToolError("give at least one of add_tags, remove_tags, add_collections, remove_collections")
     it = await _get_item(key)
-    cur = list(it["data"].get("collections", []))
-    rm = {_key(k) for k in remove or []}
-    new = [k for k in cur if k not in rm] + [k for k in map(_key, add or []) if k not in cur]
-    out = await _patch(it["key"], it["version"], {"collections": new})
-    colls = await _collections()
-    out["collections"] = [colls.get(k, {}).get("path", k) for k in new]
-    return out
-
-
-@mcp.tool()
-@_tool
-async def update_item_tags(
-    key: str,
-    add: list[str] | None = None,
-    remove: list[str] | None = None,
-) -> dict:
-    """Add and/or remove tags on an item."""
-    it = await _get_item(key)
-    rm = set(remove or [])
+    body: dict[str, Any] = {}
+    rm = set(remove_tags or [])
     tags = [t for t in it["data"].get("tags", []) if t["tag"] not in rm]
     have = {t["tag"] for t in tags}
-    tags += [{"tag": t} for t in add or [] if t not in have]
-    out = await _patch(it["key"], it["version"], {"tags": tags})
+    tags += [{"tag": t} for t in add_tags or [] if t not in have]
+    if add_tags or remove_tags:
+        body["tags"] = tags
+    cur = list(it["data"].get("collections", []))
+    rmc = {_key(k) for k in remove_collections or []}
+    new = [k for k in cur if k not in rmc] + [k for k in map(_key, add_collections or []) if k not in cur]
+    if add_collections or remove_collections:
+        body["collections"] = new
+    out = await _patch(it["key"], it["version"], body)
+    colls = await _collections()
     out["tags"] = [t["tag"] for t in tags]
+    out["collections"] = [colls.get(k, {}).get("path", k) for k in new]
     return out
 
 
@@ -881,13 +881,13 @@ async def restore_item(key: str) -> dict:
 @mcp.tool()
 @_tool
 async def format_citations(
-    keys: list[str],
+    keys: Annotated[list[str], Field(min_length=1, max_length=50)],
     style: Annotated[str, Field(description="CSL style id, e.g. apa, chicago-author-date, "
                                 "modern-language-association, ieee")] = "apa",
     locale: str = "en-US",
 ) -> dict:
     """Formatted bibliography entries and in-text citations for up to 50 items."""
-    ks = [_key(k) for k in keys][:50]
+    ks = [_key(k) for k in keys]
     r = await _req("GET", "/items", params={"itemKey": ",".join(ks), "include": "bib,citation",
                                             "style": style, "locale": locale, "linkwrap": 0})
     if r.status_code != 200:
@@ -953,30 +953,34 @@ async def export_items(
     format: Literal["bibtex", "biblatex", "ris", "csljson"] = "bibtex",
     keys: list[str] | None = None,
     collection_key: Annotated[str | None, Field(description="Export a whole collection (top-level items)")] = None,
+    max_items: Annotated[int, Field(ge=1, le=1000, description="Stop after this many items; "
+                                    "`truncated` says if the collection has more")] = 200,
 ) -> dict:
     """Export items as BibTeX, BibLaTeX, RIS or CSL-JSON, by keys or by collection."""
     if keys:
-        ks = [_key(k) for k in keys]
-        parts = []
+        ks = [_key(k) for k in keys][:max_items]
+        total, parts = len(keys), []
         for i in range(0, len(ks), 50):
             r = await _req("GET", "/items", params={"itemKey": ",".join(ks[i:i + 50]), "format": format})
             if r.status_code != 200:
                 return _fail(r)
             parts.append(r.text)
     elif collection_key:
-        parts, start = [], 0
-        while True:
+        parts, start, total = [], 0, 0
+        while start < max_items:
             r = await _req("GET", f"/collections/{_key(collection_key)}/items/top",
-                           params={"format": format, "limit": 100, "start": start})
+                           params={"format": format, "limit": min(100, max_items - start), "start": start})
             if r.status_code != 200:
                 return _fail(r)
             parts.append(r.text)
+            total = int(r.headers.get("Total-Results", "0"))
             start += 100
-            if start >= int(r.headers.get("Total-Results", "0")):
+            if start >= total:
                 break
     else:
         raise ToolError("give keys or collection_key")
-    return {"format": format, "content": "\n".join(p.strip() for p in parts if p.strip())}
+    return {"format": format, "exported": min(total, max_items), "total": total,
+            "truncated": total > max_items, "content": "\n".join(p.strip() for p in parts if p.strip())}
 
 
 @mcp.tool()
@@ -1095,8 +1099,13 @@ async def list_saved_searches() -> dict:
 
 @mcp.tool()
 @_tool
-async def get_annotations(key: Annotated[str, Field(description="Item key or PDF attachment key")]) -> dict:
-    """Highlights, underlines and comments made in Zotero's PDF reader, in page order."""
+async def get_annotations(
+    key: Annotated[str, Field(description="Item key or PDF attachment key")],
+    limit: Annotated[int, Field(ge=1, le=500)] = 100,
+    start: Annotated[int, Field(ge=0)] = 0,
+) -> dict:
+    """Highlights, underlines and comments made in Zotero's PDF reader, in page order.
+    Paginated: `total` is the full count; call again with start = start + limit while more."""
     it = await _get_item(key)
     if it["data"]["itemType"] == "attachment":
         atts = [it]
@@ -1117,7 +1126,9 @@ async def get_annotations(key: Annotated[str, Field(description="Item key or PDF
     out.sort(key=lambda x: (x["attachment"], x.get("sort", "")))
     for x in out:
         x.pop("sort", None)
-    return {"count": len(out), "annotations": out}
+    page_ = out[start:start + limit]
+    return {"total": len(out), "start": start, "returned": len(page_),
+            "more": start + len(page_) < len(out), "annotations": page_}
 
 
 def _norm_title(t: str | None) -> str:
@@ -1128,6 +1139,7 @@ def _norm_title(t: str | None) -> str:
 @_tool
 async def find_duplicates(
     collection_key: Annotated[str | None, Field(description="Limit to one collection; default whole library")] = None,
+    limit: Annotated[int, Field(ge=1, le=200, description="Groups returned; `total_groups` tells how many exist")] = 50,
 ) -> dict:
     """Groups of items sharing the same DOI or the same normalized title."""
     path = f"/collections/{_key(collection_key)}/items/top" if collection_key else "/items/top"
@@ -1145,7 +1157,7 @@ async def find_duplicates(
         if len(keys) > 1 and keys not in seen:
             seen.add(keys)
             out.append({"match": sig.split(":")[0], "items": [_summary(i) for i in its]})
-    return {"scanned": len(items), "groups": out}
+    return {"scanned": len(items), "total_groups": len(out), "groups": out[:limit]}
 
 
 @mcp.tool()
