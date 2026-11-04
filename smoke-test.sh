@@ -1,7 +1,7 @@
 #!/bin/bash
 # Smoke test for zotero-mcp; reads the token on the Pi and never prints it.
-T=$(sudo grep '^MCP_AUTH_TOKEN=' /etc/zotero-mcp/env | cut -d= -f2-)
-U=http://127.0.0.1:3003/mcp
+T=${MCP_AUTH_TOKEN:-$(sudo grep '^MCP_AUTH_TOKEN=' /etc/zotero-mcp/env | cut -d= -f2-)}
+U=http://127.0.0.1:${PORT:-3003}/mcp
 H=(-H "Content-Type: application/json" -H "Accept: application/json, text/event-stream")
 echo "no-token: $(curl -s -o /dev/null -w '%{http_code}' -X POST "$U" "${H[@]}" -d '{}')"
 call() {
@@ -15,11 +15,13 @@ curl -s -X POST "$U" -H "Authorization: Bearer $T" "${H[@]}" \
   | python3 -c 'import json,sys; print("tools:", [t["name"] for t in json.load(sys.stdin)["result"]["tools"]])'
 call list_collections '{}'
 call search_items '{"query":"design","limit":3}'
+# no-op call: must answer with the "give at least one of ..." error, nothing is written
+call update_item_links '{"key":"LNNRR6GY"}'
 if [[ "$1" == "all" ]]; then
   call export_items '{"keys":["LNNRR6GY"],"format":"bibtex"}'
-  call get_annotations '{"key":"LNNRR6GY"}'
+  call get_annotations '{"key":"LNNRR6GY","limit":5}'
   call list_related '{"key":"LNNRR6GY"}'
   call list_trash '{"limit":3}'
   call list_saved_searches '{}'
-  call find_duplicates '{"collection_key":"4EE6IKRK"}'
+  call find_duplicates '{"collection_key":"4EE6IKRK","limit":5}'
 fi
