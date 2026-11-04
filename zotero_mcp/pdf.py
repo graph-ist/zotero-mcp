@@ -67,8 +67,8 @@ def is_scan(pages: list[str]) -> bool:
     return sum(len(t.strip()) >= 50 for t in pages) < 0.7 * len(pages)
 
 
-def text_from_webdav(att_key: str, content_type: str) -> tuple[str | None, str | None]:
-    """(text, OCR state when the PDF is a scan whose OCR is not ready)."""
+def pages_from_webdav(att_key: str, content_type: str) -> tuple[list[tuple[str, str]] | None, str | None]:
+    """([(page label, text)], OCR state when the PDF is a scan whose OCR is not ready)."""
     import pymupdf
     if content_type == "application/epub+zip":
         data, kind = epub_bytes(att_key), "epub"
@@ -77,13 +77,23 @@ def text_from_webdav(att_key: str, content_type: str) -> tuple[str | None, str |
     if data is None:
         return None, None
     with pymupdf.open(stream=data, filetype=kind) as doc:
-        pages = [p.get_text() for p in doc]
-    if kind == "pdf" and is_scan(pages):
+        pages = [(p.get_label() or str(p.number + 1), p.get_text()) for p in doc]
+    if kind == "pdf" and is_scan([t for _, t in pages]):
+        ocr_pdf = ocr_cached(att_key, "pdf")
+        if ocr_pdf:
+            with pymupdf.open(ocr_pdf) as doc:
+                return [(p.get_label() or str(p.number + 1), p.get_text()) for p in doc], None
         cached = ocr_cached(att_key, "txt")
         if cached:
-            return open(cached, encoding="utf-8").read(), None
-        return "\n\n".join(pages).strip(), queue_ocr(att_key)
-    return "\n\n".join(pages).strip(), None
+            return [("?", open(cached, encoding="utf-8").read())], None
+        return pages, queue_ocr(att_key)
+    return pages, None
+
+
+def text_from_webdav(att_key: str, content_type: str) -> tuple[str | None, str | None]:
+    """(text, OCR state when the PDF is a scan whose OCR is not ready)."""
+    pages, ocr = pages_from_webdav(att_key, content_type)
+    return (None if pages is None else "\n\n".join(t for _, t in pages).strip()), ocr
 
 
 def page_range(spec: str, count: int) -> tuple[int, int]:

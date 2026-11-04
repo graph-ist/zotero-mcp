@@ -9,6 +9,10 @@ Added
 - `export_annotations`: Markdown of an item's or a collection's annotations, optionally saved as a child note that later exports replace.
 - `tests/`: every tool tested offline against an in-memory Zotero API (`tests/fake_zotero.py`); 52 tests.
 - `CHANGELOG.md`.
+- `check_claims`: for each claim of a draft, the cited source in the library and the passages of its full text that match it, with page and `zotero://open-pdf` link; quoted phrases are searched verbatim (`zotero_mcp/claims.py`).
+- `save_references`: bibliographies of many items stored in `KNOWLEDGE_DIR/references/KEY.json` for the DOI MCP's literature maps (books, humanities) (`zotero_mcp/bibliography.py`).
+- `create_item_from_doi`: `expected_title`, `expected_first_author`, `expected_year` and `force`; a DOI whose record does not match, or a retracted work, is not created.
+- `find_duplicates`: preprint ↔ published-version pairs (`match: "preprint"`).
 
 Changed
 - The code is the `zotero_mcp` package (api, config, core, items, collections, pdf, reading, ocr, transport); `server.py` is the entry point. Unit files and script paths are unchanged.

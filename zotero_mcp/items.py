@@ -3,9 +3,11 @@ import html
 import re
 from typing import Annotated, Any, Literal
 
+import httpx
 from pydantic import Field
 
 from . import api, config
+from .pdf import _norm_word
 from .core import (ToolError, collections, creators, fail, fetch_item, children, items_by_keys, key_of,
                    library_dois, paginate, patch, post_items, post_updates, req, strip_html, summary,
                    template, tool)
@@ -95,8 +97,17 @@ async def create_item_from_doi(
     collection_keys: list[str] | None = None,
     tags: list[str] | None = None,
     allow_duplicate: Annotated[bool, Field(description="Create even if the DOI is already in the library")] = False,
+    expected_title: Annotated[str | None, Field(description="Title of the work you mean; the DOI's record must match it")] = None,
+    expected_first_author: Annotated[str | None, Field(description="Surname of the first author you expect")] = None,
+    expected_year: Annotated[int | None, Field(description="Year you expect (±1 allowed)")] = None,
+    force: Annotated[bool, Field(description="Create despite a mismatch or a retraction")] = False,
 ) -> dict:
-    """Create an item with metadata fetched from Crossref for the given DOI."""
+    """Create an item with metadata fetched from Crossref for the given DOI, after checking it.
+
+    Pass expected_title / expected_first_author / expected_year whenever you know which work you
+    mean: a DOI belonging to another paper is the commonest error, and the item is then not
+    created (status 'not_created', with the record Crossref has). Retracted works (Crossref
+    retraction notices, OpenAlex is_retracted) are not created either unless force=True."""
     from .core import public
     doi = api.norm_doi(doi)
     r = await public().get(f"https://api.crossref.org/works/{doi}")
@@ -110,6 +121,10 @@ async def create_item_from_doi(
         existing = (await library_dois()).get(doi)
         if existing:
             return {"status": "duplicate", "existing": existing}
+    problems, warnings = await _check_doi_record(m, doi, title, expected_title, expected_first_author, expected_year)
+    if problems and not force:
+        return {"status": "not_created", "problems": problems, "warnings": warnings,
+                "crossref": _record_summary(m, title)}
     item_type = CSL_TYPES.get(m.get("type"), "journalArticle")
     tpl = await template(item_type)
     container = (m.get("container-title") or [None])[0]
@@ -132,7 +147,68 @@ async def create_item_from_doi(
     tpl["tags"] = [{"tag": t} for t in tags or []]
     out = await post_items([tpl])
     out["itemType"], out["title"] = item_type, title
+    if problems or warnings:
+        out["problems_overridden"], out["warnings"] = problems, warnings
     return out
+
+
+def _record_summary(m: dict, title: str) -> dict:
+    a = (m.get("author") or m.get("editor") or [{}])[0]
+    return {"title": title, "first_author": a.get("family") or a.get("name"), "year": _cr_year(m),
+            "type": m.get("type"), "container": (m.get("container-title") or [None])[0]}
+
+
+def _cr_year(m: dict) -> int | None:
+    for k in ("issued", "published-print", "published-online", "created"):
+        p = ((m.get(k) or {}).get("date-parts") or [[None]])[0]
+        if p and p[0]:
+            return int(p[0])
+    return None
+
+
+def _title_similarity(a: str | None, b: str | None) -> float:
+    """Share of the shorter title's words found in the other (subtitles and word order ignored)."""
+    ta = {w for w in _norm_title(a).split() if len(w) > 2}
+    tb = {w for w in _norm_title(b).split() if len(w) > 2}
+    if not ta or not tb:
+        return 0.0
+    return len(ta & tb) / min(len(ta), len(tb))
+
+
+async def _check_doi_record(m, doi, title, exp_title, exp_author, exp_year) -> tuple[list[str], list[str]]:
+    """Problems block creation (mismatch with what the caller expects, retraction); warnings don't."""
+    from .core import public
+    problems, warnings = [], []
+    if not title:
+        problems.append("the Crossref record has no title")
+    if exp_title and _title_similarity(exp_title, title) < 0.6:
+        problems.append(f"title mismatch: expected {exp_title!r}, the DOI is {title!r}")
+    people = [a.get("family") or a.get("name") or "" for a in (m.get("author") or []) + (m.get("editor") or [])]
+    if exp_author:
+        name = exp_author.split(",")[0] if "," in exp_author else (exp_author.split() or [""])[-1]
+        want = _norm_word(name)
+        if people and not any(want and want in _norm_word(p) for p in people):
+            problems.append(f"author mismatch: expected {exp_author!r}, the DOI's authors are {people[:5]}")
+    year = _cr_year(m)
+    if exp_year and year and abs(int(exp_year) - year) > 1:
+        problems.append(f"year mismatch: expected {exp_year}, the DOI is {year}")
+    if not people:
+        warnings.append("no authors in the Crossref record")
+    if m.get("type") in ("peer-review", "component", "dataset", "journal-issue", "journal"):
+        warnings.append(f"the DOI is a {m.get('type')!r}, not a publication")
+    # a retracted article lists its notices in 'updated-by' (Crossref + Retraction Watch)
+    retracted = bool(re.match(r"\s*(retracted|withdrawn)\b", title or "", re.I)) or any(
+        u.get("type") in ("retraction", "withdrawal") for u in m.get("updated-by") or [])
+    try:
+        r = await public().get(f"https://api.openalex.org/works/doi:{doi}",
+                                params={"select": "is_retracted"}, timeout=15)
+        if r.status_code == 200 and r.json().get("is_retracted"):
+            retracted = True
+    except httpx.HTTPError:
+        warnings.append("OpenAlex not reachable: retraction checked on Crossref only")
+    if retracted:
+        problems.append("the work is retracted")
+    return problems, warnings
 
 
 @tool
@@ -349,7 +425,9 @@ async def find_duplicates(
     collection_key: Annotated[str | None, Field(description="Limit to one collection; default whole library")] = None,
     limit: Annotated[int, Field(ge=1, le=200, description="Groups returned; `total_groups` tells how many exist")] = 50,
 ) -> dict:
-    """Groups of items sharing the same DOI or the same normalized title."""
+    """Groups of items sharing the same DOI or the same normalized title, plus preprint ↔
+    published-version pairs (match 'preprint'): similar titles, shared author surnames and
+    years within 3. Check those before merging: a preprint can differ from the final version."""
     path = f"/collections/{key_of(collection_key)}/items/top" if collection_key else "/items/top"
     items = await paginate(path)
     groups: dict[str, list[dict]] = {}
@@ -365,7 +443,50 @@ async def find_duplicates(
         if len(keys) > 1 and keys not in seen:
             seen.add(keys)
             out.append({"match": sig.split(":")[0], "items": [summary(i) for i in its]})
+    for a, b in _preprint_pairs(items):
+        keys = frozenset((a["key"], b["key"]))
+        if not any(keys <= frozenset(i["key"] for i in g["items"]) for g in out):
+            out.append({"match": "preprint", "items": [summary(a), summary(b)]})
     return {"scanned": len(items), "total_groups": len(out), "groups": out[:limit]}
+
+
+PREPRINT_DOI = ("10.48550/", "10.31234/", "10.31235/", "10.31219/", "10.1101/", "10.2139/ssrn",
+                "10.20944/", "10.21203/", "10.5281/zenodo", "10.36227/", "10.22541/", "10.32942/")
+
+
+def _is_preprint(d: dict) -> bool:
+    doi = (d.get("DOI") or "").lower()
+    return (d.get("itemType") == "preprint" or doi.startswith(PREPRINT_DOI)
+            or bool(re.search(r"arxiv|biorxiv|medrxiv|psyarxiv|ssrn|preprint",
+                              " ".join(str(d.get(k) or "") for k in ("repository", "publicationTitle", "url", "extra")), re.I)))
+
+
+def _surnames(d: dict) -> set[str]:
+    return {_norm_word(c.get("lastName") or (c.get("name") or "").split(" ")[-1]) for c in d.get("creators", [])} - {""}
+
+
+def _item_year(d: dict) -> int | None:
+    m = re.search(r"\b(1[5-9]\d\d|20\d\d)\b", d.get("date") or "")
+    return int(m.group(1)) if m else None
+
+
+def _preprint_pairs(items: list[dict]) -> list[tuple[dict, dict]]:
+    """A preprint and another item that look like the same work under a different title or DOI."""
+    pre = [i for i in items if _is_preprint(i["data"])]
+    out = []
+    for p in pre:
+        sp, yp = _surnames(p["data"]), _item_year(p["data"])
+        for o in items:
+            if o["key"] == p["key"] or (_is_preprint(o["data"]) and o["key"] < p["key"]):
+                continue
+            so, yo = _surnames(o["data"]), _item_year(o["data"])
+            if not sp or not so or len(sp & so) < min(2, len(sp), len(so)):
+                continue
+            if yp and yo and abs(yp - yo) > 3:
+                continue
+            if _title_similarity(p["data"].get("title"), o["data"].get("title")) >= 0.8:
+                out.append((p, o))
+    return out
 
 
 def _item_uri(key: str) -> str:

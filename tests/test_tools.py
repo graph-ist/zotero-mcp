@@ -433,7 +433,7 @@ def test_refresh_library_snapshot_full_then_incremental(zot, call):
 
 def test_tool_count_and_names():
     names = sorted(t.name for t in run(core.mcp.list_tools()))
-    assert len(names) == 35 and "update_item_links" in names and "set_item_collections" not in names
+    assert len(names) == 37 and "update_item_links" in names and "set_item_collections" not in names
 
 
 def test_worker_uses_shared_client(zot):
