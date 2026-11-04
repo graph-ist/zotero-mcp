@@ -42,3 +42,15 @@ def test_quotes():
     assert c.find_exact(pages, "urbanitat braucht heute meist besondere Anlässe") == [{"page": "37", "n": 2}]
     assert c.find_exact(pages, "Productive friction") == [{"page": "40", "n": 3}]
     assert c.find_exact(pages, "Urbanität braucht Risiko") == []
+
+
+def test_numbers_are_found_with_their_units():
+    pages = [("1", "Latency dropped to 115 ms (from 180ms) in 24 participants; accuracy was 50 % and 0,83 on average."),
+             ("2", "In 2019 the sample of 1,200 users grew by 12 percent.")]
+    assert c.numbers("The study reports 115 ms latency, 50% accuracy and 0.83 kappa with 24 participants in 2019; n = 7.") == \
+        ["115 ms", "50 %", "0.83", "24 participants"]
+    assert c.find_number(pages, "115 ms") == [{"page": "1", "n": 1}]
+    assert c.find_number(pages, "180 ms") == [{"page": "1", "n": 1}]
+    assert c.find_number(pages, "50 %") == [{"page": "1", "n": 1}] and c.find_number(pages, "12 %") == [{"page": "2", "n": 2}]
+    assert c.find_number(pages, "0.83") == [{"page": "1", "n": 1}] and c.find_number(pages, "1.200 users") == [{"page": "2", "n": 2}]
+    assert c.find_number(pages, "15 ms") == [] and c.find_number(pages, "24 users") == []

@@ -163,6 +163,10 @@ async def check_claims(
         if qs:
             # a quotation that is not in the source is the clearest sign of a wrong attribution
             row["quotes"] = [{"phrase": q, "found_on_pages": [h["page"] for h in cl.find_exact(pages, q)]} for q in qs]
+        figs = cl.numbers(claim)
+        if figs:
+            # a figure the draft attributes to the source must appear in it, like a quotation
+            row["numbers"] = [{"figure": f, "found_on_pages": [h["page"] for h in cl.find_number(pages, f)]} for f in figs]
     counts: dict[str, int] = {}
     for r in out:
         counts[r["status"]] = counts.get(r["status"], 0) + 1

@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.9.1 (2026-11-04)
+
+Added
+- `check_claims`: the figures a claim attributes to the source ('115 ms', '50%', '24 participants', '0.83'; years and lone digits excluded) are searched in the text with their unit, decimal comma or point, like quotations (`numbers` per claim, with the pages where each occurs).
+
 ## 0.9.0 (2026-11-04)
 
 Changed (breaking)

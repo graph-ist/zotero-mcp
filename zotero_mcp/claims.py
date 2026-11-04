@@ -124,6 +124,39 @@ def quotes(claim: str) -> list[str]:
     return [q.strip() for q in QUOTED.findall(claim)]
 
 
+NUMBER = re.compile(r"(?<![\w.,])(\d{1,3}(?:[.,]\d{3})+|\d+(?:[.,]\d+)?)\s*(%|percent|per cent|ms|s|min|h|mm|cm|m|km|kg|g|hz|khz|db|px|fps|participants?|users?|subjects?|people|items?|trials?|sessions?)?(?![\w])", re.I)
+
+
+def numbers(claim: str) -> list[str]:
+    """Figures the claim attributes to the source ('115 ms', '50%', '24 participants', '0.83'),
+    years excluded: they must appear in the text, like quotations."""
+    out = []
+    for m in NUMBER.finditer(claim):
+        value, unit = m.group(1), (m.group(2) or "").lower()
+        if not unit and (re.fullmatch(r"(1[5-9]|20)\d{2}", value) or len(value) == 1):
+            continue  # a year, or a lone digit: too common to mean anything
+        out.append((value + (" " + unit if unit else "")).strip())
+    return list(dict.fromkeys(out))
+
+
+def find_number(pages: list[tuple[str, str]], figure: str) -> list[dict]:
+    """Pages where a figure occurs with its unit (decimal comma or point, thin or no space,
+    '%' or 'percent'), not inside a larger number."""
+    m = NUMBER.fullmatch(figure.strip())
+    if not m:
+        return find_exact(pages, figure)
+    value, unit = m.group(1), (m.group(2) or "").lower()
+    num = "".join("[.,]" if ch in ".," else re.escape(ch) for ch in value)  # decimal or thousands mark, either way
+    units = {"%": r"(?:%|percent|per cent)", "percent": r"(?:%|percent|per cent)", "per cent": r"(?:%|percent|per cent)"}
+    unit_re = units.get(unit, re.escape(unit) + r"\b") if unit else ""
+    pat = re.compile(rf"(?<![\d.,]){num}(?![\d])\s*{unit_re}" if unit else rf"(?<![\d.,]){num}(?![\d.,])", re.I)
+    out = []
+    for n, (label, text) in enumerate(pages, 1):
+        if pat.search(re.sub(r"-\s*\n\s*", "", text)):
+            out.append({"page": label, "n": n})
+    return out
+
+
 def find_exact(pages: list[tuple[str, str]], phrase: str) -> list[dict]:
     """Pages where the phrase occurs, ignoring case, accents, punctuation and line breaks
     (hyphenation at line ends is joined)."""
