@@ -433,7 +433,7 @@ def test_refresh_library_snapshot_full_then_incremental(zot, call):
 
 def test_tool_count_and_names():
     names = sorted(t.name for t in run(core.mcp.list_tools()))
-    assert len(names) == 32 and "update_item_links" in names and "set_item_collections" not in names
+    assert len(names) == 35 and "update_item_links" in names and "set_item_collections" not in names
 
 
 def test_worker_uses_shared_client(zot):
@@ -445,3 +445,31 @@ def test_worker_uses_shared_client(zot):
     w.sync_file_metadata(att, "d41d8cd98f00b204e9800998ecf8427e", 1700000000000)
     assert zot.items[att]["data"]["md5"] == "d41d8cd98f00b204e9800998ecf8427e"
     w._client = None
+
+
+def test_export_annotations_markdown_and_note(zot, call):
+    k = article(zot)
+    att = zot.add_item("attachment", parentItem=k, contentType="application/pdf")
+    zot.add_item("annotation", parentItem=att, annotationType="highlight", annotationText="tacit knowing",
+                 annotationPageLabel="12", annotationSortIndex="00011|000000|00000", annotationColor="#ffd400",
+                 annotationComment="link to Polanyi", tags=["epistemology"])
+    zot.add_item("annotation", parentItem=att, annotationType="underline", annotationText="reflection-in-action",
+                 annotationPageLabel="3", annotationSortIndex="00002|000000|00000", annotationColor="#2ea8e5")
+    assert "give key or collection_key" in call("export_annotations")["detail"]
+    out = call("export_annotations", key=k)
+    assert out["items"] == 1 and out["annotations"] == 2
+    assert out["markdown"].splitlines() == [
+        f"## Design epistemology (Cross, 2015) [{k}]",
+        '- p. 3: _"reflection-in-action"_ (blue)',
+        '- p. 12: "tacit knowing" — link to Polanyi #epistemology']
+    out = call("export_annotations", key=k, save_as_note=True)
+    note = zot.items[out["note_key"]]["data"]
+    assert out["note"] == "created" and note["parentItem"] == k and "<li>p. 12:" in note["note"] and "&quot;tacit" in note["note"]
+    again = call("export_annotations", key=k, save_as_note=True)
+    assert again["note"] == "replaced" and again["note_key"] == out["note_key"]
+    assert sum(1 for i in zot.items.values() if i["data"]["itemType"] == "note") == 1
+    c = zot.add_collection("Coll")
+    zot.items[k]["data"]["collections"] = [c]
+    article(zot, title="No annotations", collections=[c])
+    out = call("export_annotations", collection_key=c)
+    assert out["items"] == 1 and out["markdown"].startswith("## Design epistemology")

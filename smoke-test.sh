@@ -21,6 +21,8 @@ if [[ "$1" == "all" ]]; then
   call export_items '{"keys":["LNNRR6GY"],"format":"bibtex"}'
   call get_annotations '{"key":"LNNRR6GY","limit":5}'
   call list_related '{"key":"LNNRR6GY"}'
+  call get_outline '{"key":"LNNRR6GY"}'
+  call export_annotations '{"key":"LNNRR6GY"}'
   call list_trash '{"limit":3}'
   call list_saved_searches '{}'
   call find_duplicates '{"collection_key":"4EE6IKRK","limit":5}'

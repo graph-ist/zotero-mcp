@@ -10,7 +10,7 @@ from typing import Annotated, Literal
 from pydantic import Field
 
 from . import config
-from .core import ToolError, children, fetch_item, paginate, post_items, req, tool
+from .core import ToolError, children, fetch_item, key_of, paginate, patch, post_items, req, tool
 
 
 # ---- files -----------------------------------------------------------------------------------------
@@ -84,6 +84,28 @@ def text_from_webdav(att_key: str, content_type: str) -> tuple[str | None, str |
             return open(cached, encoding="utf-8").read(), None
         return "\n\n".join(pages).strip(), queue_ocr(att_key)
     return "\n\n".join(pages).strip(), None
+
+
+def page_range(spec: str, count: int) -> tuple[int, int]:
+    m = re.fullmatch(r"\s*(\d+)\s*(?:-\s*(\d+))?\s*", spec or "")
+    if not m:
+        raise ToolError("pages must be like '7' or '12-15'")
+    a, b = int(m.group(1)), int(m.group(2) or m.group(1))
+    if not 1 <= a <= b <= count:
+        raise ToolError(f"pages out of range: the PDF has {count} pages")
+    if b - a >= 50:
+        raise ToolError("at most 50 pages per call")
+    return a, b
+
+
+def page_text(att_key: str, spec: str) -> str | None:
+    import pymupdf
+    data = pdf_or_ocr(att_key)
+    if data is None:
+        return None
+    with pymupdf.open(stream=data, filetype="pdf") as doc:
+        a, b = page_range(spec, doc.page_count)
+        return "\n\n".join(f"[p. {i}]\n{doc[i - 1].get_text().strip()}" for i in range(a, b + 1))
 
 
 def pdf_or_ocr(att_key: str) -> bytes | None:
@@ -197,16 +219,27 @@ async def get_fulltext(
     key: Annotated[str, Field(description="Item key or PDF/EPUB attachment key")],
     offset: Annotated[int, Field(ge=0)] = 0,
     max_chars: Annotated[int, Field(ge=1000, le=100000)] = 30000,
+    pages: Annotated[str | None, Field(description="Page range of the PDF to read, e.g. '12-15' or '7' "
+                                       "(1-based, as in get_outline); at most 50 pages. Omit for the whole text")] = None,
 ) -> dict:
     """Text of an item's PDF or EPUB: Zotero's full-text index first, else read from the WebDAV copy
-    (scanned PDFs use their OCR text once ocr_pdf has processed them).
+    (scanned PDFs use their OCR text once ocr_pdf has processed them). With `pages`, only those
+    pages of the PDF, each starting with a [p. N] marker: use get_outline to pick a section.
 
     Long texts are paginated: call again with offset = previous offset + returned length."""
     att = await readable_attachment(key)
     att_key, content_type = att["key"], att["data"].get("contentType", "")
     text, source, ocr = None, None, None
-    r = await req("GET", f"/items/{att_key}/fulltext")
-    if r.status_code == 200 and r.json().get("content"):
+    if pages:
+        if content_type != "application/pdf":
+            raise ToolError("pages applies to PDF attachments only")
+        text, source = await asyncio.to_thread(page_text, att_key, pages), "webdav_pdf_pages"
+        if text is None:
+            raise ToolError("PDF not found on WebDAV: sync files from Zotero desktop first")
+    r = None if text is not None else await req("GET", f"/items/{att_key}/fulltext")
+    if text is not None:
+        pass
+    elif r.status_code == 200 and r.json().get("content"):
         text, source = r.json()["content"], "zotero_fulltext_index"
     else:
         text, ocr = await asyncio.to_thread(text_from_webdav, att_key, content_type)
@@ -302,4 +335,99 @@ async def annotate_pdf(
            "tags": [{"tag": t} for t in tags or []]}
     out = await post_items([ann])
     out |= {"attachment_key": att["key"], "page": loc["pageLabel"]}
+    return out
+
+
+# ---- export of annotations ------------------------------------------------------------------------
+NOTE_MARK = 'data-export="annotations"'
+
+
+def _cite(d: dict) -> str:
+    from .core import year_of
+    names = [c.get("lastName") or c.get("name") or "" for c in d.get("creators", []) if c.get("creatorType") == "author"]
+    who = names[0] if len(names) == 1 else f"{names[0]} & {names[1]}" if len(names) == 2 else f"{names[0]} et al." if names else ""
+    return ", ".join(x for x in (who, year_of(d)) if x)
+
+
+def annotations_markdown(item: dict, anns: list[dict]) -> str:
+    d = item["data"]
+    head = f"## {d.get('title') or '(untitled)'}"
+    cite = _cite(d)
+    lines = [f"{head} ({cite}) [{item['key']}]" if cite else f"{head} [{item['key']}]"]
+    for a in anns:
+        page = f"p. {a['page']}: " if a.get("page") else ""
+        text = f"\"{a['text']}\"" if a.get("text") else ""
+        if a.get("type") == "underline" and text:
+            text = f"_{text}_"
+        parts = [text] if text else []
+        if a.get("comment"):
+            parts.append(f"— {a['comment']}")
+        if a.get("tags"):
+            parts.append(" ".join(f"#{t.replace(' ', '_')}" for t in a["tags"]))
+        if a.get("color") and a["color"].lower() != "#ffd400":
+            name = next((n for n, h in COLORS.items() if h == a["color"].lower()), a["color"])
+            parts.append(f"({name})")
+        lines.append(f"- {page}{' '.join(parts)}".rstrip())
+    return "\n".join(lines)
+
+
+def _md_to_html(md: str) -> str:
+    import html as h
+    out, in_list = [], False
+    for line in md.split("\n"):
+        if line.startswith("- "):
+            if not in_list:
+                out.append("<ul>")
+                in_list = True
+            out.append(f"<li>{h.escape(line[2:])}</li>")
+            continue
+        if in_list:
+            out.append("</ul>")
+            in_list = False
+        if line.startswith("## "):
+            out.append(f"<h2>{h.escape(line[3:])}</h2>")
+        elif line.strip():
+            out.append(f"<p>{h.escape(line)}</p>")
+    if in_list:
+        out.append("</ul>")
+    return f'<div {NOTE_MARK}>' + "".join(out) + "</div>"
+
+
+@tool
+async def export_annotations(
+    key: Annotated[str | None, Field(description="Item key: its highlights, underlines and comments")] = None,
+    collection_key: Annotated[str | None, Field(description="Or: every annotated item of a collection (up to 50 items)")] = None,
+    save_as_note: Annotated[bool, Field(description="With key: also save the Markdown as a child note of the item "
+                                        "(replaces the note made by an earlier export)")] = False,
+) -> dict:
+    """Reading notes from Zotero's PDF annotations as Markdown: one section per item with
+    citation and key, one line per annotation with page, quoted text, comment and tags. Paste it
+    into Obsidian or save it as a note on the item."""
+    if bool(key) == bool(collection_key):
+        raise ToolError("give key or collection_key")
+    if save_as_note and not key:
+        raise ToolError("save_as_note needs key")
+    items = [await fetch_item(key)] if key else await paginate(f"/collections/{key_of(collection_key)}/items/top", cap=50)
+    sections, count = [], 0
+    for it in items:
+        if it["data"]["itemType"] in ("attachment", "note", "annotation"):
+            raise ToolError("give the key of a regular item, not of an attachment or note")
+        anns = await annotations_of(it["key"])
+        if anns:
+            sections.append(annotations_markdown(it, anns))
+            count += len(anns)
+    md = "\n\n".join(sections)
+    out = {"items": len(sections), "annotations": count, "markdown": md}
+    if save_as_note and md:
+        existing = next((c for c in await children(items[0]["key"])
+                         if c["data"]["itemType"] == "note" and NOTE_MARK in (c["data"].get("note") or "")), None)
+        if existing:
+            res = await patch(existing["key"], existing["version"], {"note": _md_to_html(md)})
+            out["note_key"], out["note"] = existing["key"], "replaced"
+        else:
+            res = await post_items([{"itemType": "note", "parentItem": items[0]["key"], "note": _md_to_html(md),
+                                     "tags": [{"tag": "annotations"}], "collections": [], "relations": {}}])
+            out["note_key"], out["note"] = (res.get("created_keys") or [None])[0], "created"
+        if res.get("status") not in ("ok",):
+            out["note_error"] = res
     return out

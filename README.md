@@ -65,11 +65,13 @@ The endpoint is `http://127.0.0.1:3003/mcp`. The query-string token exists becau
 | Create | `create_item`, `create_item_from_doi`, `create_collection`, `add_note` |
 | Edit | `update_item`, `update_items_batch`, `update_item_links`, `set_related`, `update_collection`, `rename_tag` |
 | Delete and restore | `trash_item`, `restore_item`, `delete_collection`, `delete_tag` |
-| Output | `format_citations`, `export_items` |
-| PDF | `get_annotations`, `annotate_pdf`, `attach_pdf`, `ocr_pdf`, `ocr_status` |
+| Output | `format_citations`, `export_items`, `export_annotations` |
+| PDF | `get_outline`, `get_annotations`, `annotate_pdf`, `attach_pdf`, `ocr_pdf`, `ocr_status`, `extract_references` |
 | Snapshot | `refresh_library_snapshot` |
 
 `find_dois` checks a list of DOIs against the library in one call (DOI field and `DOI:` lines in Extra); the index is rebuilt only when the library version changes, and `create_item_from_doi` uses it to refuse duplicates. `attach_pdf` finds open access copies of an item's DOI on OpenAlex (or takes a direct link), tries them in order until one returns a PDF, creates the attachment and hands the file to the OCR worker, which stores it on WebDAV and OCRs it if it is a scan. Publishers often refuse automated downloads; repositories usually do not.
+
+`get_outline` lists the sections of a PDF with page ranges, from its bookmarks or from the typography (lines larger or bolder than the body text), and marks abstract, introduction, method, conclusion, references, notes and appendix; `get_fulltext(key, pages="12-15")` then reads one section. `extract_references` splits the reference list of a PDF into entries, picks up the DOIs it contains (optionally resolving the others on Crossref) and says which cited works are already in the library, so the gaps can be filled with `create_item_from_doi`. `export_annotations` renders the highlights, underlines and comments of an item or a collection as Markdown (citation, key, page, quote, comment, tags) and can save it as a child note of the item, replacing the note of an earlier export.
 
 `get_fulltext` uses Zotero's full-text index first and falls back to text extracted from the WebDAV copy (PDF, else EPUB) with PyMuPDF. For a scanned PDF it returns the OCR text; if there is none yet, OCR is queued automatically and the response says so. `annotate_pdf` locates a passage in the PDF and creates a highlight or underline annotation through the API; the PDF file is not modified. On a scan it uses the OCR copy. Writes use `If-Unmodified-Since-Version`, so a conflicting change made elsewhere returns an error instead of being overwritten.
 

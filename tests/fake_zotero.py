@@ -55,6 +55,7 @@ class FakeZotero:
         self.on_get: dict[str, callable] = {}  # item key -> hook run after it is read (to simulate races)
         # Public APIs
         self.crossref: dict[str, dict] = {}     # doi -> Crossref "message"
+        self.crossref_query: list[dict] = []    # works returned by /works?query.bibliographic (with _match terms)
         self.openalex: dict[str, dict] = {}     # doi -> OpenAlex work
         self.urls: dict[str, tuple[int, bytes, str]] = {}  # url -> (status, body, content-type)
         self.fail_next: list[int] = []  # HTTP statuses to answer with before serving (tests retry)
@@ -346,6 +347,10 @@ class FakeZotero:
         self.calls.append((request.method, url))
         if "Zotero-API-Key" in request.headers:
             raise AssertionError("Zotero key sent to a third party")
+        if url.startswith("https://api.crossref.org/works?"):
+            q = parse_qs(urlparse(url).query).get("query.bibliographic", [""])[0].lower()
+            hits = [w for w in self.crossref_query if any(t in q for t in w.get("_match", []))]
+            return httpx.Response(200, json={"status": "ok", "message": {"items": hits}})
         mcr = re.match(r"https://api\.crossref\.org/works/(.+)$", url)
         if mcr:
             doi = mcr.group(1).lower()
