@@ -14,6 +14,25 @@ RETRIES = 3
 TRANSPORT: httpx.BaseTransport | None = None  # tests inject an httpx.MockTransport here
 _DOI_PREFIX = re.compile(r"^(https?://(dx\.)?doi\.org/|doi:\s*)", re.I)
 _EXTRA_DOI = re.compile(r"^DOI:\s*(\S+)", re.M | re.I)
+# The outcome of a bibliographic check, kept in Extra so that the snapshot and the notes can tell a
+# verified item from one imported as it came: "Verified: 2026-11-04 match verify_doi registered_match"
+_VERIFIED = re.compile(r"^Verified:\s*(\d{4}-\d{2}-\d{2})\s+(match|mismatch|retracted|unverified)\b\s*(.*)$", re.M | re.I)
+
+
+def verified_line(status: str, source: str, date: str) -> str:
+    return f"Verified: {date} {status} {source}".rstrip()
+
+
+def parse_verified(extra: str | None) -> dict | None:
+    m = _VERIFIED.search(extra or "")
+    return {"date": m.group(1), "status": m.group(2).lower(), "detail": m.group(3).strip() or None} if m else None
+
+
+def set_verified(extra: str | None, line: str) -> str:
+    """Extra with the Verified line replaced or appended."""
+    if _VERIFIED.search(extra or ""):
+        return _VERIFIED.sub(lambda _: line, extra or "", count=1)
+    return (extra.rstrip() + "\n" + line) if extra and extra.strip() else line
 
 
 def base() -> str:

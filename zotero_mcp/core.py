@@ -80,9 +80,43 @@ async def req(method: str, path: str, *, params=None, json=None, headers=None) -
         r = await zotero().request(method, api.url(path), params=params, json=json, headers=headers)
         delay = api.retry_delay(r, attempt)
         if delay is None:
-            return r
+            break
         await asyncio.sleep(delay)
+    if method != "GET" and 200 <= r.status_code < 300:
+        schedule_snapshot_refresh()
     return r
+
+
+_refresh: dict[str, Any] = {"task": None}
+
+
+def schedule_snapshot_refresh(delay: float = 3.0) -> asyncio.Task | None:
+    """Refresh library.json shortly after a write, once for a burst of writes. The refresh costs
+    one conditional request when nothing changed; a failure is logged and never reaches the tool
+    that wrote. Disabled with KNOWLEDGE_AUTO_REFRESH=false."""
+    if not config.AUTO_REFRESH:
+        return None
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        return None
+    previous = _refresh["task"]
+    if previous is not None and not previous.done():
+        previous.cancel()
+
+    async def run():
+        try:
+            await asyncio.sleep(delay)
+            import snapshot  # top-level module next to the package
+            out = await asyncio.to_thread(snapshot.refresh)
+            log.info("library snapshot %s", out.get("status"))
+        except asyncio.CancelledError:
+            pass
+        except Exception as e:  # noqa: BLE001
+            log.warning("library snapshot refresh failed: %s", e)
+
+    _refresh["task"] = loop.create_task(run())
+    return _refresh["task"]
 
 
 fail = api.fail

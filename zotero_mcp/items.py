@@ -1,6 +1,7 @@
 """Tools on items: search, read, create, edit, trash, relations, duplicates, citations, export."""
 import html
 import re
+import time
 from typing import Annotated, Any, Literal
 
 import httpx
@@ -145,10 +146,96 @@ async def create_item_from_doi(
         for role in ("author", "editor") for a in m.get(role, [])]
     tpl["collections"] = [key_of(k) for k in collection_keys or []]
     tpl["tags"] = [{"tag": t} for t in tags or []]
+    if expected_title and not problems and "extra" in tpl:
+        # the check passed against what the caller expected: say so on the item, so the snapshot,
+        # the maps and the notes can tell it from an item imported as it came
+        tpl["extra"] = api.set_verified(tpl.get("extra"), api.verified_line(
+            "match", "create_item_from_doi crossref title+author+year", _today()))
+        out_verified = True
+    else:
+        out_verified = False
     out = await post_items([tpl])
-    out["itemType"], out["title"] = item_type, title
+    out["itemType"], out["title"], out["verified"] = item_type, title, out_verified
     if problems or warnings:
         out["problems_overridden"], out["warnings"] = problems, warnings
+    return out
+
+
+def _today() -> str:
+    return time.strftime("%Y-%m-%d", time.gmtime())
+
+
+@tool
+async def set_verification(
+    key: str,
+    status: Literal["match", "mismatch", "retracted", "unverified"],
+    source: Annotated[str, Field(description="What was checked and its outcome, e.g. 'verify_doi registered_match', "
+                                 "'verify_book verified (Open Library, DNB)', 'verify_doi registered_title_mismatch'")],
+) -> dict:
+    """Record on the item the outcome of a bibliographic check made with the DOI MCP (verify_doi,
+    verify_book, find_doi) as a "Verified: <date> <status> <source>" line in Extra, replacing an
+    earlier one. The library snapshot exposes it as `verified`, and the DOI MCP's maps show it.
+    Call it after verifying an item that was imported by hand or by the browser connector."""
+    it = await fetch_item(key)
+    d = it["data"]
+    extra = api.set_verified(d.get("extra"), api.verified_line(status, source, _today()))
+    out = await patch(it["key"], it["version"], {"extra": extra})
+    if out.get("status") == "ok":
+        out["verified"] = api.parse_verified(extra)
+    return out
+
+
+ISSUING = {"EP": "European Patent Office", "US": "United States Patent and Trademark Office",
+           "WO": "World Intellectual Property Organization", "DE": "Deutsches Patent- und Markenamt",
+           "GB": "Intellectual Property Office", "FR": "INPI", "IT": "UIBM", "JP": "Japan Patent Office",
+           "CN": "China National Intellectual Property Administration", "KR": "Korean Intellectual Property Office"}
+
+
+@tool
+async def create_item_from_patent(
+    number: Annotated[str, Field(description="Publication number as patent_get returns it, e.g. EP3500000")],
+    title: str,
+    applicants: list[str] | None = None,
+    inventors: list[str] | None = None,
+    published: Annotated[str | None, Field(description="Publication date YYYY-MM-DD")] = None,
+    priority: Annotated[str | None, Field(description="Earliest priority date YYYY-MM-DD")] = None,
+    abstract: str | None = None,
+    url: str | None = None,
+    family_id: str | None = None,
+    ipc: list[str] | None = None,
+    collection_keys: list[str] | None = None,
+    tags: list[str] | None = None,
+    allow_duplicate: bool = False,
+) -> dict:
+    """Create a patent item from the fields of the DOI MCP's patent_get (number, title,
+    applicants, inventors, published, priority, abstract, url, family_id, ipc). Patents have no
+    DOI: the publication number is the identifier, and an item with the same number is a
+    duplicate (status 'duplicate') unless allow_duplicate. family_id and IPC classes go to Extra."""
+    num = re.sub(r"[\s.,/-]", "", number).upper()
+    if not re.fullmatch(r"[A-Z]{2}\d+[A-Z]?\d?", num):
+        raise ToolError(f"not a patent publication number: {number!r} (e.g. EP3500000, US2019123456A1)")
+    if not allow_duplicate:
+        r = await req("GET", "/items/top", params={"q": num, "qmode": "everything", "itemType": "patent", "limit": 50})
+        for it in (r.json() if r.status_code == 200 else []):
+            have = re.sub(r"[\s.,/-]", "", it["data"].get("patentNumber") or "").upper()
+            if have and (have == num or have.startswith(num) or num.startswith(have)):
+                return {"status": "duplicate", "existing": summary(it)}
+    tpl = await template("patent")
+    extra = "\n".join(x for x in [f"EPO family: {family_id}" if family_id else None,
+                                 f"IPC: {', '.join(ipc)}" if ipc else None] if x)
+    values = {"title": title, "patentNumber": num, "assignee": "; ".join(applicants or []) or None,
+              "issuingAuthority": ISSUING.get(num[:2]), "country": num[:2], "issueDate": published,
+              "filingDate": priority, "priorityNumbers": None, "abstractNote": abstract, "url": url,
+              "extra": extra or None}
+    for k, v in values.items():
+        if k in tpl and v:
+            tpl[k] = v
+    tpl["creators"] = [{"creatorType": "inventor", "lastName": n.split(",")[0].strip().title() if "," in n else n.title(),
+                        "firstName": n.split(",", 1)[1].strip().title() if "," in n else ""} for n in inventors or []]
+    tpl["collections"] = [key_of(k) for k in collection_keys or []]
+    tpl["tags"] = [{"tag": t} for t in tags or []]
+    out = await post_items([tpl])
+    out["itemType"], out["patentNumber"] = "patent", num
     return out
 
 

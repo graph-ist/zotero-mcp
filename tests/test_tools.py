@@ -433,7 +433,7 @@ def test_refresh_library_snapshot_full_then_incremental(zot, call):
 
 def test_tool_count_and_names():
     names = sorted(t.name for t in run(core.mcp.list_tools()))
-    assert len(names) == 37 and "update_item_links" in names and "set_item_collections" not in names
+    assert len(names) == 39 and {"update_item_links", "set_verification", "create_item_from_patent"} <= set(names) and "set_item_collections" not in names
 
 
 def test_worker_uses_shared_client(zot):
@@ -492,3 +492,60 @@ def test_matching_module_is_the_doi_mcp_copy():
                                              "Designerly ways of knowing", "Cross", 1982))
     assert not matching.eligible(matching.assess({"title": "Designerly ways of knowing", "authors": ["Nigel Cross"], "year": 1982},
                                                  "Designerly ways of knowing", "Schön", 1982))
+
+
+def test_create_item_from_doi_records_the_verification(zot, call):
+    zot.crossref["10.1000/v"] = {"type": "journal-article", "title": ["Designerly ways of knowing"],
+                                 "issued": {"date-parts": [[1982]]}, "DOI": "10.1000/v",
+                                 "author": [{"family": "Cross", "given": "Nigel"}]}
+    plain = call("create_item_from_doi", doi="10.1000/v", allow_duplicate=True)
+    assert plain["verified"] is False and "Verified" not in (zot.items[plain["created_keys"][0]]["data"].get("extra") or "")
+    checked = call("create_item_from_doi", doi="10.1000/v", allow_duplicate=True,
+                   expected_title="Designerly ways of knowing", expected_first_author="Cross", expected_year=1982)
+    extra = zot.items[checked["created_keys"][0]]["data"]["extra"]
+    assert checked["verified"] is True and extra.startswith("Verified: ") and " match create_item_from_doi" in extra
+    # set_verification replaces the line and the snapshot exposes it
+    out = call("set_verification", key=checked["created_keys"][0], status="match", source="verify_doi registered_match")
+    assert out["status"] == "ok" and out["verified"]["status"] == "match" and out["verified"]["detail"] == "verify_doi registered_match"
+    extra = zot.items[checked["created_keys"][0]]["data"]["extra"]
+    assert extra.count("Verified:") == 1 and "verify_doi registered_match" in extra
+    import snapshot
+    assert snapshot.entry(zot.items[checked["created_keys"][0]]["data"])["verified"]["status"] == "match"
+
+
+def test_create_item_from_patent(zot, call):
+    out = call("create_item_from_patent", number="EP 3 500 000 B1", title="Foldable display device",
+               applicants=["ACME GMBH"], inventors=["LEE, JUNG", "Khalilbeigi Mohammadreza"], published="2020-01-15",
+               priority="2017-06-01", abstract="A hinge.", url="https://worldwide.espacenet.com/patent/search?q=pn%3DEP3500000",
+               family_id="12345", ipc=["G06F 1/16"], tags=["prior-art/foldable"])
+    assert out["status"] == "ok" and out["patentNumber"] == "EP3500000B1"
+    d = zot.items[out["created_keys"][0]]["data"]
+    assert d["itemType"] == "patent" and d["assignee"] == "ACME GMBH" and d["issuingAuthority"] == "European Patent Office"
+    assert d["creators"][0] == {"creatorType": "inventor", "lastName": "Lee", "firstName": "Jung"}
+    assert "EPO family: 12345" in d["extra"] and "IPC: G06F 1/16" in d["extra"] and d["issueDate"] == "2020-01-15"
+    dup = call("create_item_from_patent", number="EP3500000", title="Foldable display device")
+    assert dup["status"] == "duplicate" and dup["existing"]["key"] == out["created_keys"][0]
+    assert "not a patent" in call("create_item_from_patent", number="10.1000/x", title="t")["detail"]
+    import snapshot
+    assert snapshot.entry(d)["patent_number"] == "EP3500000B1"
+
+
+def test_writes_schedule_a_snapshot_refresh(zot, monkeypatch):
+    """A successful write schedules library.json to be refreshed; GETs and failures do not."""
+    import snapshot
+    monkeypatch.setattr(config, "AUTO_REFRESH", True)
+    if os.path.exists(snapshot.out_path()):
+        os.remove(snapshot.out_path())
+
+    async def scenario():
+        await core.req("GET", "/items/top", params={"limit": 1})
+        assert core._refresh["task"] is None
+        await core.req("POST", "/items", json=[{"itemType": "book", "title": "T", "creators": [], "tags": [], "collections": [], "relations": {}}])
+        task = core._refresh["task"]
+        assert task is not None and not task.done()
+        task.cancel()
+        t = core.schedule_snapshot_refresh(delay=0)
+        await t
+    run(scenario())
+    assert json.load(open(snapshot.out_path()))["items"][0]["title"] == "T"
+    core._refresh["task"] = None

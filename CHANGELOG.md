@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.8.0 (2026-11-04)
+
+Added
+- `set_verification`: records on an item the outcome of a bibliographic check (`verify_doi`, `verify_book`) as a `Verified: <date> <status> <source>` line in Extra; `create_item_from_doi` writes the same line when the record matched the expected title, author and year, and reports `verified`.
+- `create_item_from_patent`: a `patent` item from the fields of the DOI MCP's `patent_get`, with duplicate check on the publication number.
+- The library snapshot is refreshed in the background a few seconds after every successful write (`KNOWLEDGE_AUTO_REFRESH`, default on). `library.json` items carry `verified` and `patent_number`.
+
 ## 0.7.1 (2026-11-04)
 
 Fixed

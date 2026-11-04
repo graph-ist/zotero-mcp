@@ -15,7 +15,7 @@ sys.path.insert(0, ROOT)
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 TMP = tempfile.mkdtemp(prefix="zotero-mcp-tests-")
-os.environ.update(ZOTERO_USER_ID="1", ZOTERO_API_KEY="test-key",
+os.environ.update(ZOTERO_USER_ID="1", ZOTERO_API_KEY="test-key", KNOWLEDGE_AUTO_REFRESH="false",
                   ZOTERO_WEBDAV_DIR=os.path.join(TMP, "webdav"),
                   ZOTERO_OCR_DIR=os.path.join(TMP, "ocr"),
                   KNOWLEDGE_DIR=os.path.join(TMP, "knowledge"))

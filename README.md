@@ -32,6 +32,7 @@ All settings are environment variables.
 | `PORT` | no | `3003` | HTTP port (bound to 127.0.0.1) |
 | `MCP_AUTH_TOKEN` | in http mode | | At least 32 characters; sent as `Authorization: Bearer` header or `?token=` query parameter |
 | `MCP_ALLOWED_HOSTS` | no | | Comma-separated public host names accepted behind a proxy |
+| `KNOWLEDGE_AUTO_REFRESH` | no | `true` | Refresh `library.json` a few seconds after every successful write to the library; `false` leaves it to `refresh_library_snapshot` |
 
 ## Usage
 
@@ -62,8 +63,8 @@ The endpoint is `http://127.0.0.1:3003/mcp`. The query-string token exists becau
 | Area | Tools |
 |---|---|
 | Search and read | `search_items`, `find_dois`, `get_item`, `get_fulltext`, `list_collections`, `list_tags`, `list_saved_searches`, `list_trash`, `list_related`, `find_duplicates` |
-| Create | `create_item`, `create_item_from_doi`, `create_collection`, `add_note` |
-| Edit | `update_item`, `update_items_batch`, `update_item_links`, `set_related`, `update_collection`, `rename_tag` |
+| Create | `create_item`, `create_item_from_doi`, `create_item_from_patent`, `create_collection`, `add_note` |
+| Edit | `update_item`, `update_items_batch`, `update_item_links`, `set_verification`, `set_related`, `update_collection`, `rename_tag` |
 | Delete and restore | `trash_item`, `restore_item`, `delete_collection`, `delete_tag` |
 | Output | `format_citations`, `export_items`, `export_annotations` |
 | PDF | `get_outline`, `get_annotations`, `annotate_pdf`, `attach_pdf`, `ocr_pdf`, `ocr_status`, `extract_references` |
@@ -91,7 +92,9 @@ ocr_worker.py run | scan | enqueue KEY [--replace] [--mode normal|rasterize|enha
 
 ## Library snapshot
 
-`snapshot.py` writes `/var/lib/knowledge/library.json` (items with key, DOI, title, creators, year, tags, collection paths and keys, PDF/EPUB attachments) for services that must not call the Zotero API, such as the DOI MCP's literature maps. The tool `refresh_library_snapshot` runs it on demand (the "Refresh library and notes" button of the Literature maps page). One conditional request tells whether the library changed; if it did, only the items changed or deleted since the last snapshot are fetched and merged. The server needs group `knowledge` and write access to `/var/lib/knowledge`. The file carries `schema_version` (1); the DOI MCP refuses a newer version instead of misreading it, so bump it only when a field changes meaning or is removed. A snapshot without the field is rebuilt in full once.
+`snapshot.py` writes `/var/lib/knowledge/library.json` (items with key, DOI, title, creators, year, tags, collection paths and keys, PDF/EPUB attachments) for services that must not call the Zotero API, such as the DOI MCP's literature maps. The tool `refresh_library_snapshot` runs it on demand (the "Refresh library and notes" button of the Literature maps page). One conditional request tells whether the library changed; if it did, only the items changed or deleted since the last snapshot are fetched and merged. The server needs group `knowledge` and write access to `/var/lib/knowledge`. The file carries `schema_version` (1); the DOI MCP refuses a newer version instead of misreading it, so bump it only when a field changes meaning or is removed. A snapshot without the field is rebuilt in full once. Each item also carries `patent_number` and `verified`, the parsed `Verified:` line of Extra.
+
+`create_item_from_doi` with `expected_title`, `expected_first_author` and `expected_year` writes `Verified: <date> match create_item_from_doi crossref title+author+year` in Extra when the record matched; `set_verification(key, status, source)` records on an existing item the outcome of a check made with the DOI MCP (`verify_doi`, `verify_book`), replacing an earlier line. The DOI MCP's maps show it as `verified`. `create_item_from_patent` makes a `patent` item from the fields of the DOI MCP's `patent_get`; the publication number is the identifier and a duplicate is refused. After every successful write the library snapshot is refreshed in the background (one conditional request when nothing changed), unless `KNOWLEDGE_AUTO_REFRESH=false`.
 
 ## Code layout
 

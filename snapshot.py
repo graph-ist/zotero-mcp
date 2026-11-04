@@ -38,6 +38,8 @@ def entry(d: dict, attachments: list | None = None) -> dict:
             "doi": api.norm_doi(d["DOI"]) if d.get("DOI") else None,
             "extra_dois": [x for x in dois if x != api.norm_doi(d.get("DOI") or "")],
             "isbn": d.get("ISBN") or None, "language": d.get("language") or None,
+            "patent_number": re.sub(r"[\s.,/-]", "", d["patentNumber"]).upper() if d.get("patentNumber") else None,
+            "verified": api.parse_verified(d.get("extra")),
             "tags": [t["tag"] for t in d.get("tags", [])],
             "collection_keys": list(d.get("collections", [])),
             "attachments": attachments or []}

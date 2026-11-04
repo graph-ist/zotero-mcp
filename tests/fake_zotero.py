@@ -10,6 +10,9 @@ from urllib.parse import parse_qs, urlparse
 import httpx
 
 TEMPLATES = {
+    "patent": ["title", "abstractNote", "place", "country", "assignee", "issuingAuthority", "patentNumber",
+               "filingDate", "pages", "applicationNumber", "priorityNumbers", "issueDate", "references",
+               "legalStatus", "language", "shortTitle", "url", "accessDate", "rights", "extra"],
     "journalArticle": ["title", "abstractNote", "publicationTitle", "volume", "issue", "pages", "date",
                        "series", "seriesTitle", "seriesText", "journalAbbreviation", "language", "DOI",
                        "ISSN", "shortTitle", "url", "accessDate", "archive", "archiveLocation",
