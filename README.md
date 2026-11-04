@@ -108,6 +108,7 @@ ocr_worker.py run | scan | enqueue KEY [--replace] [--mode normal|rasterize|enha
 - `config.py`: settings from the environment
 - `core.py`: the FastMCP instance, the `tool` decorator (structured errors), async HTTP, caches (collections, item templates, the DOI index updated with `since=`), item helpers
 - `items.py`, `collections.py`, `pdf.py`, `ocr.py`: the tools by area
+- `reading.py`: `get_outline` and `extract_references`; `checks.py`: `save_references`, `check_claims`, `index_fulltext`, with `bibliography.py` (reference lists from PDF text) and `claims.py` (BM25 passages, quotations and figures)
 - `transport.py`: stdio or HTTP with the token check
 - `matching.py`: a verbatim copy of the DOI MCP's `matching.py` (title similarity, surname and year rules, errata and replies), so `create_item_from_doi` and `extract_references` accept a record under the same rules as `find_doi` and `verify_doi`; update the two files together
 

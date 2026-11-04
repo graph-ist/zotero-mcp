@@ -8,7 +8,7 @@ Env:
   ZOTERO_MAX_PDF_MB               attachments above this size are refused, default 200
   MCP_TRANSPORT                   'stdio' (default) or 'http' (streamable HTTP on 127.0.0.1)
   PORT                            HTTP port, default 3003
-  MCP_AUTH_TOKEN                  required in http mode, as Bearer header or ?token= query
+  MCP_AUTH_TOKEN                  required in http mode, Authorization: Bearer header only
   MCP_ALLOWED_HOSTS               comma-separated public host names allowed behind a proxy
 
 The code lives in the zotero_mcp package: api (Zotero client shared with the worker and the
