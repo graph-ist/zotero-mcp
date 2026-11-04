@@ -4,7 +4,7 @@ import sys
 
 os.environ.setdefault("ZOTERO_USER_ID", "0")
 os.environ.setdefault("ZOTERO_API_KEY", "x")
-sys.path.insert(0, os.path.dirname(__file__))
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import pymupdf  # noqa: E402
 from server import _locate  # noqa: E402
 
@@ -42,15 +42,19 @@ import tempfile  # noqa: E402
 import zipfile  # noqa: E402
 import server  # noqa: E402
 
-with tempfile.TemporaryDirectory() as d:
-    server.WEBDAV_DIR = d
-    with zipfile.ZipFile(os.path.join(d, "ABCD2345.zip"), "w") as z:
-        z.writestr("x.pdf", data)
-    assert server._pdf_bytes("ABCD2345") == data
-    server.MAX_PDF_BYTES = len(data) - 1
-    try:
-        server._pdf_bytes("ABCD2345")
-        raise AssertionError("cap not enforced")
-    except server.ToolError:
-        pass
+_saved = server.WEBDAV_DIR, server.MAX_PDF_BYTES
+try:
+    with tempfile.TemporaryDirectory() as d:
+        server.WEBDAV_DIR = d
+        with zipfile.ZipFile(os.path.join(d, "ABCD2345.zip"), "w") as z:
+            z.writestr("x.pdf", data)
+        assert server._pdf_bytes("ABCD2345") == data
+        server.MAX_PDF_BYTES = len(data) - 1
+        try:
+            server._pdf_bytes("ABCD2345")
+            raise AssertionError("cap not enforced")
+        except server.ToolError:
+            pass
+finally:
+    server.WEBDAV_DIR, server.MAX_PDF_BYTES = _saved
 print("size cap ok")

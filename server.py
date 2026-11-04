@@ -14,6 +14,7 @@ import functools
 import hmac
 import html
 import json
+import logging
 import os
 import re
 import time
@@ -103,6 +104,10 @@ def _tool(fn):
             return await fn(*a, **kw)
         except ToolError as e:
             return {"status": "error", "detail": str(e)}
+        except Exception as e:  # unexpected: still a structured answer for the model, traceback in the log
+            logging.getLogger("zotero-mcp").exception("%s failed", fn.__name__)
+            return {"status": "error", "detail": f"{type(e).__name__}: {e}"[:500],
+                    "hint": "unexpected server error; retry once, then report it"}
     return wrapper
 
 

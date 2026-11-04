@@ -1,0 +1,406 @@
+"""Every MCP tool against the fake Zotero API. Each test builds the library it needs."""
+import json
+import os
+
+import pytest
+
+import server
+from conftest import article, make_pdf, put_webdav, run
+
+OCR = server.OCR_DIR
+
+
+# ---- search and read -------------------------------------------------------------------------
+
+def test_search_items_lists_top_level_with_collection_paths(zot, call):
+    parent = zot.add_collection("Thesis")
+    child = zot.add_collection("Chapter 1", parent)
+    k = article(zot, collections=[child], tags=["read"])
+    zot.add_item("attachment", parentItem=k, contentType="application/pdf")
+    out = call("search_items")
+    assert out["total"] == 1 and out["items"][0]["key"] == k
+    assert out["items"][0]["collections"] == ["Thesis › Chapter 1"]
+    assert out["items"][0]["creators"] == ["Cross, Nigel"] and out["items"][0]["tags"] == ["read"]
+
+
+def test_search_items_filters(zot, call):
+    a = article(zot, title="Affordances in HCI", tags=["hci"])
+    b = zot.add_item("book", title="Phenomenology of Perception", date="1945")
+    assert [i["key"] for i in call("search_items", query="affordance")["items"]] == [a]
+    assert [i["key"] for i in call("search_items", tag="hci")["items"]] == [a]
+    assert [i["key"] for i in call("search_items", item_type="book")["items"]] == [b]
+    c = zot.add_collection("Phil")
+    zot.items[b]["data"]["collections"] = [c]
+    assert [i["key"] for i in call("search_items", collection_key=c)["items"]] == [b]
+    page = call("search_items", limit=1, start=1, sort="title")
+    assert page["total"] == 2 and len(page["items"]) == 1 and page["start"] == 1
+
+
+def test_search_items_rejects_unknown_item_type(zot, call):
+    out = call("search_items", item_type="journal_article")
+    assert out["status"] == "error" and "journal_article" in out["detail"]
+
+
+def test_search_everything_reaches_fulltext_index(zot, call):
+    k = article(zot)
+    att = zot.add_item("attachment", parentItem=k, contentType="application/pdf")
+    zot.fulltext[att] = {"content": "the tacit dimension of knowing"}
+    assert call("search_items", query="tacit")["total"] == 0
+    assert call("search_items", query="tacit", mode="everything")["total"] == 1
+
+
+def test_get_item_returns_attachments_and_truncated_notes(zot, call):
+    k = article(zot)
+    att = zot.add_item("attachment", parentItem=k, contentType="application/pdf", filename="Cross 2015.pdf")
+    zot.add_item("note", parentItem=k, note="<p>first</p><p>" + "x" * 2000 + "</p>")
+    out = call("get_item", key=k.lower())
+    assert out["item"]["title"] == "Design epistemology" and "relations" not in out["item"]
+    assert out["attachments"][0]["key"] == att and out["attachments"][0]["filename"] == "Cross 2015.pdf"
+    assert out["notes"][0]["text"].startswith("first\n") and len(out["notes"][0]["text"]) == 1000
+
+
+def test_get_item_bad_key(zot, call):
+    out = call("get_item", key="nope")
+    assert out["status"] == "error" and "8 characters" in out["detail"]
+    assert call("get_item", key="ZZZZZZZZ")["status"] == "error"
+
+
+def test_get_fulltext_prefers_index_then_webdav_and_paginates(zot, call):
+    k = article(zot)
+    att = zot.add_item("attachment", parentItem=k, contentType="application/pdf")
+    zot.fulltext[att] = {"content": "a" * 1500}
+    out = call("get_fulltext", key=k, max_chars=1000)
+    assert out["source"] == "zotero_fulltext_index" and out["returned_chars"] == 1000 and out["more"]
+    assert call("get_fulltext", key=k, offset=1000, max_chars=1000)["more"] is False
+    del zot.fulltext[att]
+    put_webdav(att, "Cross 2015.pdf", make_pdf(["Page one text about design, long enough to count as text.", "Page two, also long enough to count as a text page here."]))
+    out = call("get_fulltext", key=att)
+    assert out["source"] == "webdav_pdf" and "Page two" in out["text"] and "ocr" not in out
+
+
+def test_get_fulltext_errors(zot, call):
+    k = article(zot)
+    assert "no PDF" in call("get_fulltext", key=k)["detail"]
+    att = zot.add_item("attachment", parentItem=k, contentType="application/pdf")
+    assert "sync files" in call("get_fulltext", key=k)["detail"]
+
+
+def test_get_fulltext_scan_queues_ocr(zot, call):
+    k = article(zot)
+    att = zot.add_item("attachment", parentItem=k, contentType="application/pdf")
+    put_webdav(att, "scan.pdf", make_pdf(["", "", ""]))
+    out = call("get_fulltext", key=k)
+    assert out["ocr"] == "queued" and os.path.exists(os.path.join(OCR, "queue", f"{att}.json"))
+    assert call("ocr_status", key=k)["state"] == "queued"
+
+
+def test_list_collections_sorted_paths(zot, call):
+    p = zot.add_collection("B parent")
+    zot.add_collection("A child", p)
+    zot.add_collection("A top")
+    out = call("list_collections")["collections"]
+    assert [c["path"] for c in out] == ["A top", "B parent", "B parent › A child"]
+    assert all({"key", "path", "numItems"} <= set(c) for c in out)
+
+
+def test_list_tags_trash_saved_searches(zot, call):
+    article(zot, tags=["a", "b"])
+    k = zot.add_item("book", title="Gone", deleted=True)
+    zot.searches.append({"key": "SRCH0001", "version": 1, "data": {"name": "Recent", "conditions": [{"condition": "dateAdded", "operator": "isInTheLast", "value": "7 days"}]}})
+    tags = call("list_tags")
+    assert tags["total"] == 2 and tags["tags"][0] == {"tag": "a", "numItems": 1}
+    assert [i["key"] for i in call("list_trash")["items"]] == [k]
+    assert call("list_saved_searches")["searches"][0]["name"] == "Recent"
+
+
+# ---- create --------------------------------------------------------------------------------
+
+def test_create_item_validates_fields(zot, call):
+    out = call("create_item", item_type="book", fields={"title": "T", "bogus": "x"})
+    assert out["status"] == "error" and "bogus" in out["detail"] and "publisher" in out["detail"]
+    assert "unknown itemType" in call("create_item", item_type="paper", fields={})["detail"]
+
+
+def test_create_item_ok(zot, call):
+    c = zot.add_collection("New")
+    out = call("create_item", item_type="book", fields={"title": "T", "date": "1999"},
+               creators=[{"creatorType": "author", "lastName": "Schön", "firstName": "Donald"}],
+               collection_keys=[c], tags=["t1"])
+    assert out["status"] == "ok" and len(out["created_keys"]) == 1
+    d = zot.items[out["created_keys"][0]]["data"]
+    assert d["collections"] == [c] and d["tags"] == [{"tag": "t1"}] and d["creators"][0]["lastName"] == "Schön"
+
+
+def test_create_item_from_doi_maps_crossref_and_refuses_duplicates(zot, call):
+    zot.crossref["10.1016/j.destud.2015.01.001"] = {
+        "type": "journal-article", "title": ["Designerly ways"], "subtitle": ["Of knowing"],
+        "container-title": ["Design Studies"], "volume": "3", "issue": "4", "page": "221-227",
+        "issued": {"date-parts": [[1982, 10]]}, "DOI": "10.1016/j.destud.2015.01.001",
+        "author": [{"family": "Cross", "given": "Nigel"}, {"name": "Design Research Society"}],
+        "abstract": "<jats:p>Abstract <i>text</i></jats:p>"}
+    out = call("create_item_from_doi", doi="https://doi.org/10.1016/j.destud.2015.01.001", tags=["new"])
+    assert out["status"] == "ok" and out["itemType"] == "journalArticle" and out["title"] == "Designerly ways: Of knowing"
+    d = zot.items[out["created_keys"][0]]["data"]
+    assert d["date"] == "1982-10" and d["pages"] == "221-227" and d["abstractNote"] == "Abstract text"
+    assert d["creators"][1] == {"creatorType": "author", "name": "Design Research Society"}
+    dup = call("create_item_from_doi", doi="10.1016/J.DESTUD.2015.01.001")
+    assert dup["status"] == "duplicate" and dup["existing"]["key"] == out["created_keys"][0]
+    assert call("create_item_from_doi", doi="10.1016/j.destud.2015.01.001", allow_duplicate=True)["status"] == "ok"
+    assert "Crossref" in call("create_item_from_doi", doi="10.9999/none")["detail"]
+
+
+def test_create_collection(zot, call):
+    p = call("create_collection", name="Top")
+    c = call("create_collection", name="Sub", parent_key=p["key"])
+    assert p["status"] == c["status"] == "ok"
+    assert [x["path"] for x in call("list_collections")["collections"]] == ["Top", "Top › Sub"]
+
+
+def test_add_note_html(zot, call):
+    k = article(zot)
+    out = call("add_note", parent_key=k, text="First <b>para</b>\nline two\n\nSecond")
+    assert out["status"] == "ok"
+    assert zot.items[out["created_keys"][0]]["data"]["note"] == "<p>First &lt;b&gt;para&lt;/b&gt;<br/>line two</p><p>Second</p>"
+
+
+# ---- DOIs and PDFs ---------------------------------------------------------------------------
+
+def test_find_dois_matches_field_and_extra(zot, call):
+    a = article(zot, doi="10.1000/ABC")
+    b = zot.add_item("book", title="Book", extra="DOI: 10.5555/book\nOther: x")
+    out = call("find_dois", dois=["https://doi.org/10.1000/abc", "doi:10.5555/BOOK", "10.1/missing"])
+    assert set(out["in_library"]) == {"https://doi.org/10.1000/abc", "doi:10.5555/BOOK"}
+    assert out["in_library"]["doi:10.5555/BOOK"]["key"] == b and out["missing"] == ["10.1/missing"]
+    assert out["library_dois"] == 2
+    calls_before = len(zot.calls)
+    call("find_dois", dois=["10.1000/abc"])  # unchanged library: one conditional request, no re-scan
+    assert len(zot.calls) - calls_before == 1
+    article(zot, doi="10.1000/new")
+    assert "10.1000/new" in call("find_dois", dois=["10.1000/new"])["in_library"]
+
+
+def test_attach_pdf_from_open_access(zot, call):
+    k = article(zot, doi="10.1000/oa")
+    pdf = make_pdf(["Open access text"])
+    zot.openalex["10.1000/oa"] = {"best_oa_location": {"pdf_url": "https://pub.example/blocked.pdf", "version": "publishedVersion"},
+                                  "locations": [{"pdf_url": "https://repo.example/oa.pdf", "version": "acceptedVersion",
+                                                 "license": "cc-by", "source": {"display_name": "Repo"}}]}
+    zot.urls["https://pub.example/blocked.pdf"] = (200, b"<html>paywall</html>", "text/html")
+    zot.urls["https://repo.example/oa.pdf"] = (200, pdf, "application/pdf")
+    out = call("attach_pdf", key=k)
+    assert out["status"] == "queued" and out["host"] == "Repo" and out["bytes"] == len(pdf)
+    att = out["attachment_key"]
+    d = zot.items[att]["data"]
+    assert d["parentItem"] == k and d["filename"] == "Cross 2015.pdf" and d["contentType"] == "application/pdf"
+    assert open(os.path.join(OCR, "incoming", f"{att}.pdf"), "rb").read() == pdf
+    assert json.load(open(os.path.join(OCR, "queue", f"{att}.json")))["action"] == "attach"
+    assert call("attach_pdf", key=k)["status"] == "already_has_pdf"
+
+
+def test_attach_pdf_failures(zot, call):
+    k = article(zot, doi="")
+    assert "no DOI" in call("attach_pdf", key=k)["detail"]
+    zot.urls["https://x.example/landing"] = (200, b"<html>", "text/html")
+    out = call("attach_pdf", key=k, url="https://x.example/landing")
+    assert out["status"] == "download_failed" and "landing page" in out["tried"][0]
+    k2 = article(zot, doi="10.1000/none")
+    assert call("attach_pdf", key=k2)["status"] == "no_open_access_pdf"
+    att = zot.add_item("attachment", parentItem=k, contentType="application/pdf")
+    assert "regular item" in call("attach_pdf", key=att)["detail"]
+
+
+def test_get_annotations_in_page_order_paginated(zot, call):
+    k = article(zot)
+    att = zot.add_item("attachment", parentItem=k, contentType="application/pdf")
+    for i, page in enumerate(("12", "3", "7")):
+        zot.add_item("annotation", parentItem=att, annotationType="highlight", annotationText=f"t{i}",
+                     annotationPageLabel=page, annotationSortIndex=f"{int(page):05d}|000000|00000",
+                     annotationColor="#ffd400", tags=["important"] if i == 0 else [])
+    out = call("get_annotations", key=k)
+    assert out["total"] == 3 and [a["page"] for a in out["annotations"]] == ["3", "7", "12"]
+    assert out["annotations"][2]["tags"] == ["important"] and "sort" not in out["annotations"][0]
+    page = call("get_annotations", key=att, limit=2, start=2)
+    assert page["returned"] == 1 and page["more"] is False and page["annotations"][0]["text"] == "t0"
+
+
+def test_annotate_pdf_locates_and_creates(zot, call):
+    k = article(zot)
+    att = zot.add_item("attachment", parentItem=k, contentType="application/pdf")
+    put_webdav(att, "a.pdf", make_pdf(["Intro.", "Design knowledge is distinct from experi-\nence alone."]))
+    dry = call("annotate_pdf", key=k, text="distinct from experience alone", dry_run=True)
+    assert dry == {"status": "found", "attachment_key": att, "page": "2", "lines": 2}
+    out = call("annotate_pdf", key=k, text="distinct from experience alone", type="underline", color="blue",
+               comment="hyphenation", tags=["method"])
+    assert out["status"] == "ok" and out["page"] == "2"
+    d = zot.items[out["created_keys"][0]]["data"]
+    assert d["annotationType"] == "underline" and d["annotationColor"] == "#2ea8e5" and d["parentItem"] == att
+    pos = json.loads(d["annotationPosition"])
+    assert pos["pageIndex"] == 1 and len(pos["rects"]) == 2 and d["tags"] == [{"tag": "method"}]
+    missing = call("annotate_pdf", key=k, text="not in the document")
+    assert "text not found" in missing["detail"] and "ocr_pdf" in missing["detail"]
+
+
+def test_annotate_pdf_validation(zot, call):
+    k = article(zot)
+    with pytest.raises(Exception, match="yellow"):
+        call("annotate_pdf", key=k, text="x", color="pink")
+    assert "no PDF attachment" in call("annotate_pdf", key=k, text="x")["detail"]
+
+
+def test_ocr_pdf_and_status(zot, call):
+    k = article(zot)
+    att = zot.add_item("attachment", parentItem=k, contentType="application/pdf")
+    assert call("ocr_status", key=att)["state"] == "never queued"
+    out = call("ocr_pdf", key=k, replace=True, mode="rasterize")
+    assert out["status"] == "queued" and out["attachment_key"] == att
+    job = json.load(open(os.path.join(OCR, "queue", f"{att}.json")))
+    assert job["mode"] == "rasterize" and job["replace"] == "yes"
+    st = call("ocr_status")
+    assert st["total"] >= 1 and any(j["key"] == att for j in st["jobs"])
+
+
+# ---- edit ------------------------------------------------------------------------------------
+
+def test_update_item(zot, call):
+    k = article(zot)
+    assert "cannot change" in call("update_item", key=k, fields={"tags": []})["detail"]
+    assert "not valid" in call("update_item", key=k, fields={"nope": 1})["detail"]
+    out = call("update_item", key=k, fields={"date": "2016", "creators": [{"creatorType": "author", "name": "X"}]})
+    assert out["status"] == "ok" and zot.items[k]["data"]["date"] == "2016" and zot.items[k]["data"]["creators"] == [{"creatorType": "author", "name": "X"}]
+
+
+def test_update_item_conflict_gives_hint(zot, call):
+    k = article(zot)
+    zot.on_get[k] = lambda: zot.items[k].__setitem__("version", zot.items[k]["version"] + 1)
+    out = call("update_item", key=k, fields={"date": "2016"})
+    assert out["status"] == "error" and out["http_status"] == 412 and "fetch it again" in out["hint"]
+
+
+def test_update_item_links(zot, call):
+    c1, c2 = zot.add_collection("One"), zot.add_collection("Two")
+    k = article(zot, tags=["old", "keep"], collections=[c1])
+    assert "at least one" in call("update_item_links", key=k)["detail"]
+    out = call("update_item_links", key=k, add_tags=["new", "keep"], remove_tags=["old"],
+               add_collections=[c2], remove_collections=[c1])
+    assert out["status"] == "ok" and out["tags"] == ["keep", "new"] and out["collections"] == ["Two"]
+    assert zot.items[k]["data"]["collections"] == [c2]
+
+
+def test_update_items_batch(zot, call):
+    c = zot.add_collection("Batch")
+    a, b = article(zot, collections=[c]), article(zot, title="Other", collections=[c])
+    zot.add_item("attachment", parentItem=a, contentType="application/pdf", collections=[c])
+    assert "give keys" in call("update_items_batch")["detail"]
+    assert "cannot set" in call("update_items_batch", keys=[a], fields={"itemType": "book"})["detail"]
+    out = call("update_items_batch", collection_key=c, add_tags=["batch"], fields={"extra": "read"})
+    assert out["matched"] == 2 and out["updated"] == 2 and out["failed"] is None
+    assert all(zot.items[k]["data"]["extra"] == "read" and zot.items[k]["data"]["tags"] == [{"tag": "batch"}] for k in (a, b))
+    assert call("update_items_batch", keys=[a], add_tags=["batch"])["unchanged"] == 1
+
+
+def test_trash_restore(zot, call):
+    k = article(zot)
+    out = call("trash_item", key=k)
+    assert out["status"] == "ok" and out["title"] == "Design epistemology" and zot.items[k]["data"]["deleted"]
+    assert call("search_items")["total"] == 0 and call("list_trash")["total"] == 1
+    assert call("restore_item", key=k)["status"] == "ok" and "deleted" not in zot.items[k]["data"]
+
+
+def test_update_collection(zot, call):
+    a = zot.add_collection("A")
+    b = zot.add_collection("B", a)
+    assert "nothing to change" in call("update_collection", key=a)["detail"]
+    assert "inside itself" in call("update_collection", key=a, parent_key=b)["detail"]
+    out = call("update_collection", key=b, name="B2", move_to_top=True)
+    assert out["status"] == "ok" and out["path"] == "B2"
+    assert call("update_collection", key=b, parent_key=a)["path"] == "A › B2"
+
+
+def test_delete_collection(zot, call):
+    a = zot.add_collection("A")
+    b = zot.add_collection("B", a)
+    k = article(zot, collections=[a, b])
+    refused = call("delete_collection", key=a)
+    assert refused["status"] == "refused" and refused["subcollections"] == ["A › B"]
+    out = call("delete_collection", key=a, include_subcollections=True)
+    assert out["status"] == "ok" and out["deleted"] == "A" and not zot.collections
+    assert k in zot.items and zot.items[k]["data"]["collections"] == []
+
+
+def test_rename_and_delete_tag(zot, call):
+    a = article(zot, tags=["old", "new"])
+    b = article(zot, title="B", tags=["old"])
+    c = article(zot, title="C", tags=["other"])
+    assert call("rename_tag", old="none", new="x")["updated"] == 0
+    out = call("rename_tag", old="old", new="new")
+    assert out["status"] == "ok" and out["updated"] == 2
+    assert zot.items[a]["data"]["tags"] == [{"tag": "new"}] and zot.items[b]["data"]["tags"] == [{"tag": "new"}]
+    assert call("delete_tag", tags=["new", "other"])["status"] == "ok"
+    assert all(zot.items[k]["data"]["tags"] == [] for k in (a, b, c))
+
+
+def test_related(zot, call):
+    a, b = article(zot), article(zot, title="B")
+    out = call("set_related", key=a, other_key=b)
+    assert out["status"] == "ok" and out["updated"] == 2
+    assert [r["key"] for r in call("list_related", key=b)["related"]] == [a]
+    assert call("set_related", key=a, other_key=b, remove=True)["updated"] == 2
+    assert call("list_related", key=a)["related"] == []
+
+
+# ---- output ----------------------------------------------------------------------------------
+
+def test_format_citations(zot, call):
+    a = article(zot)
+    out = call("format_citations", keys=[a], style="apa")
+    assert out["entries"][0] == {"key": a, "citation": "(2015)", "bib": "Design epistemology (2015)."}
+    with pytest.raises(Exception):
+        call("format_citations", keys=[])
+
+
+def test_export_items_keys_and_collection_cap(zot, call):
+    c = zot.add_collection("Exp")
+    keys = [article(zot, title=f"T{i}", collections=[c]) for i in range(3)]
+    out = call("export_items", keys=keys[:2], format="bibtex")
+    assert out["content"].count("@article") == 2 and out["truncated"] is False
+    out = call("export_items", collection_key=c, max_items=2)
+    assert out["exported"] == 2 and out["total"] == 3 and out["truncated"] and out["content"].count("@article") == 2
+    assert "give keys" in call("export_items")["detail"]
+
+
+def test_find_duplicates(zot, call):
+    article(zot, doi="10.1/dup"); article(zot, title="Same Title Here!", doi="10.1/dup")
+    article(zot, title="same title here", doi=""); article(zot, title="Unique one", doi="")
+    out = call("find_duplicates")
+    assert out["scanned"] == 4 and out["total_groups"] == 2 and {g["match"] for g in out["groups"]} == {"doi", "title"}
+    assert len(call("find_duplicates", limit=1)["groups"]) == 1
+
+
+# ---- cross-cutting ---------------------------------------------------------------------------
+
+def test_unexpected_exception_becomes_structured_error(zot, call, monkeypatch):
+    k = article(zot)
+    async def boom(*a, **kw):
+        raise RuntimeError("socket closed")
+    monkeypatch.setattr(server, "_get_item", boom)
+    out = call("get_item", key=k)
+    assert out["status"] == "error" and "RuntimeError" in out["detail"]
+
+
+def test_retry_on_429(zot, call):
+    k = article(zot)
+    orig, hits = zot.handler, {"n": 0}
+    def flaky(req):
+        hits["n"] += 1
+        if hits["n"] == 1:
+            import httpx
+            return httpx.Response(429, headers={"Retry-After": "0"})
+        return orig(req)
+    import httpx
+    server._zot = httpx.AsyncClient(transport=httpx.MockTransport(flaky), headers={"Zotero-API-Version": "3", "Zotero-API-Key": "k"})
+    assert call("get_item", key=k)["item"]["key"] == k
+
+
+def test_tool_count_and_names():
+    names = sorted(t.name for t in run(server.mcp.list_tools()))
+    assert len(names) == 32 and "update_item_links" in names and "set_item_collections" not in names

@@ -108,8 +108,8 @@ After changing a unit file or the script it runs, use `systemctl restart`: `enab
 ## Tests
 
 ```sh
-python test_locate.py
-python test_ocr_worker.py
+pip install pytest
+python -m pytest tests
 ```
 
-`test_locate.py` builds a PDF in memory and checks the text location used by `annotate_pdf` and the size cap. `test_ocr_worker.py` checks text clean-up, the WebDAV replacement with backup and `.prop`, and the queue, in a temporary directory. Neither calls the Zotero API.
+`tests/test_tools.py` calls every tool against `tests/fake_zotero.py`, an in-memory stand-in for the Zotero Web API (and for Crossref, OpenAlex and PDF downloads) served through `httpx.MockTransport`; WebDAV and OCR directories are temporary. `tests/test_locate.py` checks the text location used by `annotate_pdf` and the size cap; `tests/test_ocr_worker.py` checks text clean-up, the WebDAV replacement with backup and `.prop`, and the queue. Nothing touches the network.

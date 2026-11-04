@@ -1,15 +1,15 @@
 """Tests for ocr_worker.py on temporary folders; no network, no real WebDAV files."""
 import hashlib, json, os, re, sys, tempfile, zipfile
 
-tmp = tempfile.mkdtemp()
-os.environ.update(ZOTERO_WEBDAV_DIR=os.path.join(tmp, "webdav"), ZOTERO_OCR_DIR=os.path.join(tmp, "lib", "ocr"),
-                  ZOTERO_USER_ID="0", ZOTERO_API_KEY="x")
-sys.path.insert(0, os.path.dirname(__file__))
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+if "ZOTERO_OCR_DIR" not in os.environ:  # run as a script: own temporary folders (pytest: see conftest.py)
+    tmp = tempfile.mkdtemp()
+    os.environ.update(ZOTERO_WEBDAV_DIR=os.path.join(tmp, "webdav"), ZOTERO_OCR_DIR=os.path.join(tmp, "lib", "ocr"),
+                      ZOTERO_USER_ID="0", ZOTERO_API_KEY="x")
 import ocr_worker as w
 
-os.makedirs(w.WEBDAV)
-for d in (w.QUEUE, w.STATUS, w.CACHE):
-    os.makedirs(d)
+for d in (w.WEBDAV, w.QUEUE, w.STATUS, w.CACHE):
+    os.makedirs(d, exist_ok=True)
 
 
 def test_clean():
