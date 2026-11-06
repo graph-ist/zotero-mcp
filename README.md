@@ -30,7 +30,8 @@ All settings are environment variables.
 | `ZOTERO_OCR_LANGS` | no | `eng+ita` | Tesseract languages when the item has no Language field |
 | `MCP_TRANSPORT` | no | `stdio` | `stdio` or `http` |
 | `PORT` | no | `3003` | HTTP port (bound to 127.0.0.1) |
-| `MCP_AUTH_TOKEN` | in http mode | | At least 32 characters; sent as `Authorization: Bearer` header on every request (a token in the URL is refused) |
+| `MCP_AUTH_TOKEN` | in http mode | | At least 32 characters; sent as `Authorization: Bearer` header on every request (a token in the URL is refused unless `MCP_ALLOW_QUERY_TOKEN` is set) |
+| `MCP_ALLOW_QUERY_TOKEN` | | off | `true` also accepts the token as `?token=` in the URL, for Claude web, whose connector form has only a name and a URL. Keep the proxy access log off |
 | `MCP_ALLOWED_HOSTS` | no | | Comma-separated public host names accepted behind a proxy |
 | `KNOWLEDGE_AUTO_REFRESH` | no | `true` | Refresh `library.json` a few seconds after every successful write to the library; `false` leaves it to `refresh_library_snapshot` |
 
@@ -56,7 +57,7 @@ HTTP:
 MCP_TRANSPORT=http MCP_AUTH_TOKEN=$(openssl rand -hex 32) python server.py
 ```
 
-The endpoint is `http://127.0.0.1:3003/mcp`; every request carries `Authorization: Bearer <MCP_AUTH_TOKEN>` (in Claude web, under *Request headers* of the custom connector). A token in the query string is refused, so it never reaches proxy logs or browser histories. `GET /status` answers without credentials to loopback clients only (version, library snapshot, full texts and bibliographies indexed), for the operator on the Pi.
+The endpoint is `http://127.0.0.1:3003/mcp`; every request carries `Authorization: Bearer <MCP_AUTH_TOKEN>` (in Claude web, under *Request headers* of the custom connector). A token in the query string is refused, so it never reaches proxy logs or browser histories, unless `MCP_ALLOW_QUERY_TOKEN=true`: Claude web's connector form now has only a name and a URL, so there the URL has the form `https://host/zotero-mcp?token=<MCP_AUTH_TOKEN>`. `GET /status` answers without credentials to loopback clients only (version, library snapshot, full texts and bibliographies indexed), for the operator on the Pi.
 
 ## Tools
 

@@ -31,6 +31,11 @@ def status() -> dict:
     return out
 
 
+# Claude web's "Add custom connector" form has only a name and a URL: with this flag the token is
+# also accepted as ?token= (off by default).
+ALLOW_QUERY_TOKEN = os.environ.get("MCP_ALLOW_QUERY_TOKEN", "").lower() in ("1", "true", "yes")
+
+
 class TokenAuth:
     """Authorization: Bearer <token> on every request; /status for loopback clients."""
 
@@ -49,6 +54,9 @@ class TokenAuth:
                 return
             header = dict(scope.get("headers", [])).get(b"authorization", b"")
             bearer = header[7:] if header[:7].lower() == b"bearer " else b""
+            if not bearer and ALLOW_QUERY_TOKEN:
+                from urllib.parse import parse_qs
+                bearer = parse_qs(scope.get("query_string", b"").decode()).get("token", [""])[0].encode()
             if not hmac.compare_digest(bearer, self.token):
                 from starlette.responses import JSONResponse
                 await JSONResponse({"error": "unauthorized"}, status_code=401,

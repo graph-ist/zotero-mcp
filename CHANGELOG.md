@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased
+
+Added
+- `MCP_ALLOW_QUERY_TOKEN=true`: the token is also accepted as `?token=` in the URL, for Claude web's connector form, which has only a name and a URL. Off by default.
+
 ## 0.9.1 (2026-11-04)
 
 Added

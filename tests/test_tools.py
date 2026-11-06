@@ -573,8 +573,9 @@ def test_index_fulltext_writes_pages_and_annotations(zot, call):
     assert snapshot.entry(dict(zot.items[k]["data"], extra="Citation Key: cross1982design"))["citekey"] == "cross1982design"
 
 
-def test_http_auth_requires_bearer_header_and_status_is_loopback_only():
+def test_http_auth_requires_bearer_header_and_status_is_loopback_only(monkeypatch):
     import httpx
+    from zotero_mcp import transport
     from zotero_mcp.transport import TokenAuth
 
     async def inner(scope, receive, send):
@@ -590,6 +591,10 @@ def test_http_auth_requires_bearer_header_and_status_is_loopback_only():
             assert (await c.get("/mcp")).status_code == 401
             ok = await c.get("/mcp", headers={"Authorization": f"Bearer {token}"})
             assert ok.status_code == 200 and ok.json() == {"ok": True}
+            monkeypatch.setattr(transport, "ALLOW_QUERY_TOKEN", True)  # Claude web: the token in the URL
+            assert (await c.get("/mcp?token=" + token)).status_code == 200
+            assert (await c.get("/mcp?token=wrong")).status_code == 401
+            monkeypatch.setattr(transport, "ALLOW_QUERY_TOKEN", False)
             st = await c.get("/status")
             assert st.status_code == 200 and st.json()["service"] == "zotero-mcp" and "fulltext" in st.json()
         async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app, client=("203.0.113.5", 4000)), base_url="http://host") as c:
