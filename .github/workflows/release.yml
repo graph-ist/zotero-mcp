@@ -3,6 +3,8 @@ name: Release
 # Publishes to PyPI when a GitHub release is published (tag vX.Y.Z matching VERSION).
 # Authentication uses PyPI trusted publishing (OIDC): add a "pending publisher" on pypi.org
 # (project graphist-zotero-mcp, workflow release.yml, environment pypi). No token is stored here.
+# Off until the repository variable PYPI_PUBLISH is set to "true" (Settings -> Secrets and
+# variables -> Actions -> Variables): until then the server is installed from GitHub.
 
 on:
   release:
@@ -10,6 +12,7 @@ on:
 
 jobs:
   build:
+    if: vars.PYPI_PUBLISH == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4

@@ -1,6 +1,5 @@
 # zotero-mcp
 
-[![PyPI](https://img.shields.io/pypi/v/graphist-zotero-mcp.svg)](https://pypi.org/project/graphist-zotero-mcp/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
 MCP server to search, read and edit a Zotero library through the Zotero Web API v3. It runs over stdio for local clients or as streamable HTTP behind a reverse proxy, and can read PDFs and EPUBs from a WebDAV copy of the Zotero file storage to provide full text and to create highlights. A background worker adds OCR to scanned PDFs.
@@ -16,7 +15,7 @@ Without WebDAV, searching, reading metadata and Zotero's full-text index, creati
 
 ## Installation
 
-The package is on PyPI as [`graphist-zotero-mcp`](https://pypi.org/project/graphist-zotero-mcp/) (the name `zotero-mcp` belongs to another project). With [uv](https://docs.astral.sh/uv/), `uvx graphist-zotero-mcp` downloads it into an isolated environment and starts the stdio server.
+The server installs straight from this GitHub repository. With [uv](https://docs.astral.sh/uv/), `uvx --from git+https://github.com/graph-ist/zotero-mcp graphist-zotero-mcp` downloads it into an isolated environment and starts the stdio server, with no clone and no account. Without a suffix uv takes the latest commit on `main`; for a fixed version add a tag, `git+https://github.com/graph-ist/zotero-mcp@v0.10.0`. (The distribution is named `graphist-zotero-mcp` because `zotero-mcp` belongs to another project on PyPI.)
 
 ### Claude Desktop
 
@@ -27,7 +26,7 @@ In `claude_desktop_config.json` (macOS: `~/Library/Application Support/Claude/`,
   "mcpServers": {
     "zotero": {
       "command": "uvx",
-      "args": ["graphist-zotero-mcp"],
+      "args": ["--from", "git+https://github.com/graph-ist/zotero-mcp", "graphist-zotero-mcp"],
       "env": {
         "ZOTERO_USER_ID": "123456",
         "ZOTERO_API_KEY": "your_api_key",
@@ -44,13 +43,13 @@ If Claude Desktop does not find `uvx`, use its absolute path (`which uvx`). `KNO
 
 ```sh
 claude mcp add zotero --env ZOTERO_USER_ID=123456 --env ZOTERO_API_KEY=your_api_key \
-  --env KNOWLEDGE_AUTO_REFRESH=false -- uvx graphist-zotero-mcp
+  --env KNOWLEDGE_AUTO_REFRESH=false -- uvx --from git+https://github.com/graph-ist/zotero-mcp graphist-zotero-mcp
 ```
 
 ### pip
 
 ```sh
-pip install graphist-zotero-mcp
+pip install "graphist-zotero-mcp @ git+https://github.com/graph-ist/zotero-mcp"
 ```
 
 The package installs `graphist-zotero-mcp` (the server; `python -m zotero_mcp` also works), `graphist-zotero-snapshot` (library snapshot) and `graphist-zotero-ocr` (OCR worker).
@@ -60,7 +59,7 @@ The package installs `graphist-zotero-mcp` (the server; `python -m zotero_mcp` a
 ```sh
 python -m venv .venv
 .venv/bin/pip install --require-hashes -r requirements.lock.txt
-.venv/bin/pip install --no-deps graphist-zotero-mcp==0.10.0     # or --no-deps . from a checkout
+.venv/bin/pip install --no-deps "git+https://github.com/graph-ist/zotero-mcp@v0.10.0"     # or --no-deps . from a checkout
 ```
 
 `requirements.lock.txt` pins every dependency with hashes (the versions running on the Pi). To update, loosen the pins, run `uv pip compile requirements.txt --universal --python-version 3.13 --generate-hashes -o requirements.lock.txt`, and run `uvx pip-audit` on the result.
@@ -94,7 +93,7 @@ Stdio, for example in a VS Code `mcp.json`:
   "servers": {
     "zotero": {
       "command": "uvx",
-      "args": ["graphist-zotero-mcp"],
+      "args": ["--from", "git+https://github.com/graph-ist/zotero-mcp", "graphist-zotero-mcp"],
       "env": { "ZOTERO_USER_ID": "123456", "ZOTERO_API_KEY": "..." }
     }
   }
@@ -190,8 +189,8 @@ uv run --group dev pytest tests      # or: pip install -e . pytest && python -m 
 
 `tests/test_tools.py` calls every tool against `tests/fake_zotero.py`, an in-memory stand-in for the Zotero Web API (and for Crossref, OpenAlex and PDF downloads) served through `httpx.MockTransport`; WebDAV and OCR directories are temporary. `tests/test_locate.py` checks the text location used by `annotate_pdf` and the size cap; `tests/test_ocr_worker.py` checks text clean-up, the WebDAV replacement with backup and `.prop`, and the queue. Nothing touches the network.
 
-Releases are published to PyPI by `.github/workflows/release.yml` when a GitHub release tagged `vX.Y.Z` (matching `VERSION` in `zotero_mcp/config.py`) is published, through PyPI trusted publishing: no token is stored in the repository.
+A release is a git tag `vX.Y.Z` matching `VERSION` in `zotero_mcp/config.py`. Publishing to PyPI is prepared in `.github/workflows/release.yml` (PyPI trusted publishing, no token in the repository) and stays off until the repository variable `PYPI_PUBLISH` is `true`.
 
 ## Licence
 
-[MIT](LICENSE). The server depends on [PyMuPDF](https://pymupdf.readthedocs.io/), which is licensed under the AGPL-3.0 (or a commercial licence from Artifex). Installing the package from PyPI downloads PyMuPDF separately; whoever distributes the server together with PyMuPDF, for example in a container image, or offers it to others as a network service, should check the AGPL obligations that apply to that combination.
+[MIT](LICENSE). The server depends on [PyMuPDF](https://pymupdf.readthedocs.io/), which is licensed under the AGPL-3.0 (or a commercial licence from Artifex). Installing the server downloads PyMuPDF separately from PyPI; whoever distributes the server together with PyMuPDF, for example in a container image, or offers it to others as a network service, should check the AGPL obligations that apply to that combination.
