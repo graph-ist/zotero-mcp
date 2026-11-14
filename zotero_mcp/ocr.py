@@ -28,7 +28,7 @@ async def ocr_pdf(
     """Queue OCR for a scanned PDF. Runs in the background on the Pi (minutes to hours for a book):
     the text goes to Zotero's full-text index, and get_fulltext / annotate_pdf work on the scan.
     PDFs that already have text are left alone. Follow progress with ocr_status."""
-    import ocr_worker
+    from . import ocr_worker
     att = await pdf_attachment(key)
     status = await asyncio.to_thread(ocr_worker.enqueue, att["key"], "yes" if replace else "no", "tool", mode)
     return {"status": "queued", "attachment_key": att["key"], "replace": replace, "mode": mode,
@@ -55,7 +55,7 @@ async def ocr_status(
 async def refresh_library_snapshot() -> dict:
     """Update the library index that the DOI server uses to flag which papers are already in Zotero
     (keys and tags). Call it after adding or changing many items; a no-op if nothing changed."""
-    import snapshot
+    from . import snapshot
     return await asyncio.to_thread(snapshot.refresh)
 
 
@@ -110,7 +110,7 @@ async def attach_pdf(
     """Attach a PDF to an item: an open access copy found via the DOI, or a given link. The file goes
     to the WebDAV storage through the background worker (seconds), then Zotero clients download it;
     a scan is also OCRed. Only for legally available copies (open access, author versions)."""
-    import ocr_worker
+    from . import ocr_worker
     item = (await fetch_item(key))["data"]
     if item["itemType"] in ("attachment", "note", "annotation"):
         raise ToolError("give the key of a regular item, not of an attachment or note")

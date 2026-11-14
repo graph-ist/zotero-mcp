@@ -6,7 +6,7 @@ if "ZOTERO_OCR_DIR" not in os.environ:  # run as a script: own temporary folders
     tmp = tempfile.mkdtemp()
     os.environ.update(ZOTERO_WEBDAV_DIR=os.path.join(tmp, "webdav"), ZOTERO_OCR_DIR=os.path.join(tmp, "lib", "ocr"),
                       ZOTERO_USER_ID="0", ZOTERO_API_KEY="x")
-import ocr_worker as w
+from zotero_mcp import ocr_worker as w
 
 for d in (w.WEBDAV, w.QUEUE, w.STATUS, w.CACHE):
     os.makedirs(d, exist_ok=True)

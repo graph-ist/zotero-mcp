@@ -14,7 +14,7 @@ from .core import mcp
 
 def status() -> dict:
     """Operator view: version, library snapshot, full texts indexed for the shared corpus."""
-    import snapshot  # top-level module next to the package
+    from . import snapshot
     out: dict = {"service": "zotero-mcp", "version": config.VERSION, "auto_refresh": config.AUTO_REFRESH}
     try:
         snap = json.load(open(snapshot.out_path(), encoding="utf-8"))

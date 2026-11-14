@@ -107,7 +107,7 @@ def schedule_snapshot_refresh(delay: float = 3.0) -> asyncio.Task | None:
     async def run():
         try:
             await asyncio.sleep(delay)
-            import snapshot  # top-level module next to the package
+            from . import snapshot
             out = await asyncio.to_thread(snapshot.refresh)
             log.info("library snapshot %s", out.get("status"))
         except asyncio.CancelledError:
