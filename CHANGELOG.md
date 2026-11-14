@@ -1,6 +1,11 @@
 # Changelog
 
-## Unreleased
+## 0.10.0
+
+Changed
+- Published on PyPI as `graphist-zotero-mcp`, MIT licence; `uvx graphist-zotero-mcp` runs it without a clone. Commands `graphist-zotero-mcp`, `graphist-zotero-snapshot`, `graphist-zotero-ocr`; `python -m zotero_mcp` also works.
+- `snapshot.py` and `ocr_worker.py` moved into the package (`zotero_mcp/snapshot.py`, `zotero_mcp/ocr_worker.py`), so the installed package carries them; the scripts at the root are now wrappers and the systemd units keep working unchanged.
+- Without `ZOTERO_OCR_DIR` and without `/var/lib/zotero-mcp`, the OCR folder is `~/.local/state/zotero-mcp/ocr` (or under `$XDG_STATE_HOME`). The OCR worker imports `fcntl` only when it runs the queue, so the server also starts on Windows.
 
 Added
 - `MCP_ALLOW_QUERY_TOKEN=true`: the token is also accepted as `?token=` in the URL, for Claude web's connector form, which has only a name and a URL. Off by default.

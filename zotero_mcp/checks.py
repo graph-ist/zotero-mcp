@@ -15,7 +15,7 @@ from .pdf import annotations_of, pages_from_webdav, pdf_attachment, text_from_we
 
 
 def snapshot_items() -> list[dict]:
-    import snapshot  # top-level module next to the package
+    from . import snapshot
     try:
         return json.load(open(snapshot.out_path(), encoding="utf-8")).get("items", [])
     except (OSError, ValueError):

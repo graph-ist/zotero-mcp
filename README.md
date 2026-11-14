@@ -1,17 +1,66 @@
 # zotero-mcp
 
+[![PyPI](https://img.shields.io/pypi/v/graphist-zotero-mcp.svg)](https://pypi.org/project/graphist-zotero-mcp/)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+
 MCP server to search, read and edit a Zotero library through the Zotero Web API v3. It runs over stdio for local clients or as streamable HTTP behind a reverse proxy, and can read PDFs and EPUBs from a WebDAV copy of the Zotero file storage to provide full text and to create highlights. A background worker adds OCR to scanned PDFs.
 
 ## Requirements
 
 - Python 3.10 or later
-- A Zotero user ID and an API key with write access (https://www.zotero.org/settings/keys)
-- Optional: Zotero file sync over WebDAV, needed for `get_fulltext` (fallback) and `annotate_pdf`
+- A Zotero user ID and an API key with write access (https://www.zotero.org/settings/keys: the user ID is shown on that page as "Your user ID for use in API calls")
+- Optional: Zotero file sync over WebDAV, with the WebDAV folder readable by the server, needed for `get_fulltext` on items Zotero has not indexed, `annotate_pdf`, `get_outline`, `extract_references`, `attach_pdf` and OCR. The files that Zotero's own storage or the desktop app keep (`~/Zotero/storage`) are not read
 - Optional, for OCR: `ocrmypdf`, `tesseract-ocr-eng`, `tesseract-ocr-ita` (system packages)
+
+Without WebDAV, searching, reading metadata and Zotero's full-text index, creating and editing items, collections, tags and notes, citations and exports all work.
+
+## Installation
+
+The package is on PyPI as [`graphist-zotero-mcp`](https://pypi.org/project/graphist-zotero-mcp/) (the name `zotero-mcp` belongs to another project). With [uv](https://docs.astral.sh/uv/), `uvx graphist-zotero-mcp` downloads it into an isolated environment and starts the stdio server.
+
+### Claude Desktop
+
+In `claude_desktop_config.json` (macOS: `~/Library/Application Support/Claude/`, Windows: `%APPDATA%\Claude\`):
+
+```json
+{
+  "mcpServers": {
+    "zotero": {
+      "command": "uvx",
+      "args": ["graphist-zotero-mcp"],
+      "env": {
+        "ZOTERO_USER_ID": "123456",
+        "ZOTERO_API_KEY": "your_api_key",
+        "KNOWLEDGE_AUTO_REFRESH": "false"
+      }
+    }
+  }
+}
+```
+
+If Claude Desktop does not find `uvx`, use its absolute path (`which uvx`). `KNOWLEDGE_AUTO_REFRESH=false` turns off the library snapshot for the [DOI MCP](https://github.com/graph-ist/doi-mcp); leave it on and set `KNOWLEDGE_DIR` only if you use that server too.
+
+### Claude Code
+
+```sh
+claude mcp add zotero --env ZOTERO_USER_ID=123456 --env ZOTERO_API_KEY=your_api_key \
+  --env KNOWLEDGE_AUTO_REFRESH=false -- uvx graphist-zotero-mcp
+```
+
+### pip
+
+```sh
+pip install graphist-zotero-mcp
+```
+
+The package installs `graphist-zotero-mcp` (the server; `python -m zotero_mcp` also works), `graphist-zotero-snapshot` (library snapshot) and `graphist-zotero-ocr` (OCR worker).
+
+### Server install from the locked versions
 
 ```sh
 python -m venv .venv
 .venv/bin/pip install --require-hashes -r requirements.lock.txt
+.venv/bin/pip install --no-deps graphist-zotero-mcp==0.10.0     # or --no-deps . from a checkout
 ```
 
 `requirements.lock.txt` pins every dependency with hashes (the versions running on the Pi). To update, loosen the pins, run `uv pip compile requirements.txt --universal --python-version 3.13 --generate-hashes -o requirements.lock.txt`, and run `uvx pip-audit` on the result.
@@ -26,13 +75,14 @@ All settings are environment variables.
 | `ZOTERO_API_KEY` | yes | | Zotero API key |
 | `ZOTERO_WEBDAV_DIR` | no | `/srv/zotero-webdav/zotero` | Directory with the `KEY.zip` attachment files |
 | `ZOTERO_MAX_PDF_MB` | no | `200` | Attachments larger than this are refused instead of being read into memory |
-| `ZOTERO_OCR_DIR` | no | `/var/lib/zotero-mcp/ocr` | OCR queue, status and cache |
+| `ZOTERO_OCR_DIR` | no | `/var/lib/zotero-mcp/ocr` if `/var/lib/zotero-mcp` exists, else `~/.local/state/zotero-mcp/ocr` | OCR queue, status and cache |
 | `ZOTERO_OCR_LANGS` | no | `eng+ita` | Tesseract languages when the item has no Language field |
 | `MCP_TRANSPORT` | no | `stdio` | `stdio` or `http` |
 | `PORT` | no | `3003` | HTTP port (bound to 127.0.0.1) |
 | `MCP_AUTH_TOKEN` | in http mode | | At least 32 characters; sent as `Authorization: Bearer` header on every request (a token in the URL is refused unless `MCP_ALLOW_QUERY_TOKEN` is set) |
 | `MCP_ALLOW_QUERY_TOKEN` | | off | `true` also accepts the token as `?token=` in the URL, for Claude web, whose connector form has only a name and a URL. Keep the proxy access log off |
 | `MCP_ALLOWED_HOSTS` | no | | Comma-separated public host names accepted behind a proxy |
+| `KNOWLEDGE_DIR` | no | `/var/lib/knowledge` | Where `library.json`, `fulltext/` and `references/` are written for the DOI MCP |
 | `KNOWLEDGE_AUTO_REFRESH` | no | `true` | Refresh `library.json` a few seconds after every successful write to the library; `false` leaves it to `refresh_library_snapshot` |
 
 ## Usage
@@ -43,8 +93,8 @@ Stdio, for example in a VS Code `mcp.json`:
 {
   "servers": {
     "zotero": {
-      "command": "/path/to/zotero-mcp/.venv/bin/python",
-      "args": ["/path/to/zotero-mcp/server.py"],
+      "command": "uvx",
+      "args": ["graphist-zotero-mcp"],
       "env": { "ZOTERO_USER_ID": "123456", "ZOTERO_API_KEY": "..." }
     }
   }
@@ -54,7 +104,7 @@ Stdio, for example in a VS Code `mcp.json`:
 HTTP:
 
 ```sh
-MCP_TRANSPORT=http MCP_AUTH_TOKEN=$(openssl rand -hex 32) python server.py
+MCP_TRANSPORT=http MCP_AUTH_TOKEN=$(openssl rand -hex 32) graphist-zotero-mcp
 ```
 
 The endpoint is `http://127.0.0.1:3003/mcp`; every request carries `Authorization: Bearer <MCP_AUTH_TOKEN>` (in Claude web, under *Request headers* of the custom connector). A token in the query string is refused, so it never reaches proxy logs or browser histories, unless `MCP_ALLOW_QUERY_TOKEN=true`: Claude web's connector form now has only a name and a URL, so there the URL has the form `https://host/zotero-mcp?token=<MCP_AUTH_TOKEN>`. `GET /status` answers without credentials to loopback clients only (version, library snapshot, full texts and bibliographies indexed), for the operator on the Pi.
@@ -81,7 +131,7 @@ The endpoint is `http://127.0.0.1:3003/mcp`; every request carries `Authorizatio
 
 ## OCR
 
-`ocr_worker.py` processes jobs queued by `ocr_pdf`, by `get_fulltext` on a scan, or from the command line. A PDF counts as scanned when under 70% of its pages have text. For each job:
+`graphist-zotero-ocr` (`zotero_mcp/ocr_worker.py`) processes jobs queued by `ocr_pdf`, by `get_fulltext` on a scan, or from the command line. A PDF counts as scanned when under 70% of its pages have text. For each job:
 
 1. ocrmypdf adds an invisible text layer and leaves the page images untouched (`--skip-text --optimize 0`), so geometry and existing annotations stay valid; the PDF and the cleaned text are kept in the cache;
 2. the text goes to Zotero's full-text index (`PUT /items/{key}/fulltext`);
@@ -90,12 +140,12 @@ The endpoint is `http://127.0.0.1:3003/mcp`; every request carries `Authorizatio
 Modes: `normal`; `rasterize`, pages redrawn as images and deskewed, for PDFs that ocrmypdf cannot read (corrupt images); `enhance`, as `rasterize` plus greyscale, contrast, sharpening and a median filter, for poor scans only, since it can erase small type. OCR languages come from the item's Language field.
 
 ```sh
-ocr_worker.py run | scan | enqueue KEY [--replace] [--mode normal|rasterize|enhance]
+graphist-zotero-ocr run | scan | enqueue KEY [--replace] [--mode normal|rasterize|enhance]
 ```
 
 ## Library snapshot
 
-`snapshot.py` writes `/var/lib/knowledge/library.json` (items with key, DOI, title, creators, year, tags, collection paths and keys, PDF/EPUB attachments) for services that must not call the Zotero API, such as the DOI MCP's literature maps. The tool `refresh_library_snapshot` runs it on demand (the "Refresh library and notes" button of the Literature maps page). One conditional request tells whether the library changed; if it did, only the items changed or deleted since the last snapshot are fetched and merged. The server needs group `knowledge` and write access to `/var/lib/knowledge`. The file carries `schema_version` (1); the DOI MCP refuses a newer version instead of misreading it, so bump it only when a field changes meaning or is removed. A snapshot without the field is rebuilt in full once. Each item also carries `patent_number`, `verified` (the parsed `Verified:` line of Extra) and `citekey` (the `Citation Key:` line that Better BibTeX writes for pinned keys), which the DOI MCP's `check_draft` resolves.
+`graphist-zotero-snapshot` (`zotero_mcp/snapshot.py`) writes `KNOWLEDGE_DIR/library.json` (items with key, DOI, title, creators, year, tags, collection paths and keys, PDF/EPUB attachments) for services that must not call the Zotero API, such as the DOI MCP's literature maps. The tool `refresh_library_snapshot` runs it on demand (the "Refresh library and notes" button of the Literature maps page). One conditional request tells whether the library changed; if it did, only the items changed or deleted since the last snapshot are fetched and merged. The server needs group `knowledge` and write access to `/var/lib/knowledge`. The file carries `schema_version` (1); the DOI MCP refuses a newer version instead of misreading it, so bump it only when a field changes meaning or is removed. A snapshot without the field is rebuilt in full once. Each item also carries `patent_number`, `verified` (the parsed `Verified:` line of Extra) and `citekey` (the `Citation Key:` line that Better BibTeX writes for pinned keys), which the DOI MCP's `check_draft` resolves.
 
 `index_fulltext(item_keys | collection)` writes the text of each item's PDF or EPUB page by page, with its highlights and comments, to `KNOWLEDGE_DIR/fulltext/KEY.json`: the DOI MCP's `search_everything` indexes those files together with the Obsidian notes. Scans use their OCR text. Run it per collection, then again after adding PDFs or annotating (`force` rewrites).
 
@@ -103,7 +153,7 @@ ocr_worker.py run | scan | enqueue KEY [--replace] [--mode normal|rasterize|enha
 
 ## Code layout
 
-`server.py` is the entry point; the code is the `zotero_mcp` package:
+The code is the `zotero_mcp` package; `transport.main` is the entry point of the `graphist-zotero-mcp` command:
 
 - `api.py`: everything about api.zotero.org shared by the server, the worker and the snapshot: base URL and headers, retry policy on 429/503, error hints, key and DOI helpers, a synchronous client
 - `config.py`: settings from the environment
@@ -111,9 +161,10 @@ ocr_worker.py run | scan | enqueue KEY [--replace] [--mode normal|rasterize|enha
 - `items.py`, `collections.py`, `pdf.py`, `ocr.py`: the tools by area
 - `reading.py`: `get_outline` and `extract_references`; `checks.py`: `save_references`, `check_claims`, `index_fulltext`, with `bibliography.py` (reference lists from PDF text) and `claims.py` (BM25 passages, quotations and figures)
 - `transport.py`: stdio or HTTP with the token check
+- `snapshot.py`: the library snapshot; `ocr_worker.py`: the OCR worker
 - `matching.py`: a verbatim copy of the DOI MCP's `matching.py` (title similarity, surname and year rules, errata and replies), so `create_item_from_doi` and `extract_references` accept a record under the same rules as `find_doi` and `verify_doi`; update the two files together
 
-`ocr_worker.py` and `snapshot.py` stay at the root as the scripts the systemd units run.
+`server.py`, `snapshot.py` and `ocr_worker.py` at the root are thin wrappers around the package, kept so that installs that run the scripts from a checkout (the systemd units in `deploy/`) keep working.
 
 ## Deployment
 
@@ -134,8 +185,13 @@ After changing a unit file or the script it runs, use `systemctl restart`: `enab
 ## Tests
 
 ```sh
-pip install pytest
-python -m pytest tests
+uv run --group dev pytest tests      # or: pip install -e . pytest && python -m pytest tests
 ```
 
 `tests/test_tools.py` calls every tool against `tests/fake_zotero.py`, an in-memory stand-in for the Zotero Web API (and for Crossref, OpenAlex and PDF downloads) served through `httpx.MockTransport`; WebDAV and OCR directories are temporary. `tests/test_locate.py` checks the text location used by `annotate_pdf` and the size cap; `tests/test_ocr_worker.py` checks text clean-up, the WebDAV replacement with backup and `.prop`, and the queue. Nothing touches the network.
+
+Releases are published to PyPI by `.github/workflows/release.yml` when a GitHub release tagged `vX.Y.Z` (matching `VERSION` in `zotero_mcp/config.py`) is published, through PyPI trusted publishing: no token is stored in the repository.
+
+## Licence
+
+[MIT](LICENSE). The server depends on [PyMuPDF](https://pymupdf.readthedocs.io/), which is licensed under the AGPL-3.0 (or a commercial licence from Artifex). Installing the package from PyPI downloads PyMuPDF separately; whoever distributes the server together with PyMuPDF, for example in a container image, or offers it to others as a network service, should check the AGPL obligations that apply to that combination.
