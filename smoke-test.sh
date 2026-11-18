@@ -22,8 +22,12 @@ if [[ "$1" == "all" ]]; then
   call get_annotations '{"key":"LNNRR6GY","limit":5}'
   call list_related '{"key":"LNNRR6GY"}'
   call get_outline '{"key":"LNNRR6GY"}'
+  call get_page_layout '{"key":"LNNRR6GY","page":1}'
   call export_annotations '{"key":"LNNRR6GY"}'
   call list_trash '{"limit":3}'
   call list_saved_searches '{}'
   call find_duplicates '{"collection_key":"4EE6IKRK","limit":5}'
+  # read-only: dry_run looks up and checks, writes nothing
+  call create_item_from_isbn '{"isbn":"0262691914","dry_run":true}'
+  call import_items '{"text":"@book{simon96, author={Simon, Herbert A.}, title={The Sciences of the Artificial}, year=1996}","dry_run":true}'
 fi

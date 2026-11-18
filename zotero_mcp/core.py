@@ -72,7 +72,7 @@ def reset_clients() -> None:
     _zot = _pub = None
     _coll_cache[:] = [None, {}]
     _templates.clear()
-    _doi_index.update(version=None, items={}, by_key={})
+    _doi_index.update(version=None, items={}, by_key={}, isbns={}, isbn_by_key={})
 
 
 async def req(method: str, path: str, *, params=None, json=None, headers=None) -> httpx.Response:
@@ -276,7 +276,9 @@ async def template(item_type: str) -> dict:
     return dict(_templates[item_type])
 
 
-_doi_index: dict[str, Any] = {"version": None, "items": {}, "by_key": {}}
+# DOIs of every top-level item and ISBNs of books (a chapter carries the ISBN of its book, so
+# chapters are left out: adding the book must not count as a duplicate of one of its chapters)
+_doi_index: dict[str, Any] = {"version": None, "items": {}, "by_key": {}, "isbns": {}, "isbn_by_key": {}}
 
 
 def _index_item(it: dict) -> None:
@@ -285,12 +287,18 @@ def _index_item(it: dict) -> None:
         _doi_index["by_key"][it["key"]] = dois
         for doi in dois:
             _doi_index["items"].setdefault(doi, summary(it))
+    isbns = api.item_isbns(it["data"]) if it["data"].get("itemType") == "book" else []
+    if isbns:
+        _doi_index["isbn_by_key"][it["key"]] = isbns
+        for isbn in isbns:
+            _doi_index["isbns"].setdefault(isbn, summary(it))
 
 
 def _unindex(key: str) -> None:
-    for doi in _doi_index["by_key"].pop(key, []):
-        if _doi_index["items"].get(doi, {}).get("key") == key:
-            del _doi_index["items"][doi]
+    for ids, by_key in (("items", "by_key"), ("isbns", "isbn_by_key")):
+        for v in _doi_index[by_key].pop(key, []):
+            if _doi_index[ids].get(v, {}).get("key") == key:
+                del _doi_index[ids][v]
 
 
 async def library_dois() -> dict[str, dict]:
@@ -305,7 +313,7 @@ async def library_dois() -> dict[str, dict]:
         raise ToolError(f"library not readable (HTTP {r.status_code})")
     new_version = r.headers.get("Last-Modified-Version")
     if version is None:
-        _doi_index.update(items={}, by_key={})
+        _doi_index.update(items={}, by_key={}, isbns={}, isbn_by_key={})
         for it in await paginate("/items/top", cap=10 ** 6):
             _index_item(it)
     else:
@@ -319,3 +327,9 @@ async def library_dois() -> dict[str, dict]:
                 _index_item(it)
     _doi_index["version"] = new_version
     return _doi_index["items"]
+
+
+async def library_isbns() -> dict[str, dict]:
+    """ISBN-13 -> summary of the book carrying it; same index and refresh as library_dois."""
+    await library_dois()
+    return _doi_index["isbns"]

@@ -178,18 +178,146 @@ def fulltext_dir() -> str:
     return os.path.join(config.KNOWLEDGE_DIR, "fulltext")
 
 
+async def _index_one(key: str, it: dict) -> dict | str:
+    """Write fulltext/KEY.json for one item; a dict on success, else the reason as a string."""
+    try:
+        atts = sorted(it.get("attachments") or [], key=lambda a: a["contentType"] != "application/pdf")
+        if atts:
+            att_key, ctype = atts[0]["key"], atts[0]["contentType"]
+        else:
+            att = await pdf_attachment(key)
+            att_key, ctype = att["key"], "application/pdf"
+        pages, ocr = await asyncio.to_thread(pages_from_webdav, att_key, ctype)
+        if ocr:
+            return f"scan waiting for OCR ({ocr}): try again later"
+        if pages is None:
+            return "no file on WebDAV"
+        anns = await annotations_of(key)
+        doc = {"item": key, "attachment": att_key, "title": it.get("title"), "creators": it.get("creators"),
+               "year": it.get("year"), "indexed": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+               "pages": [{"page": label, "text": text} for label, text in pages if text.strip()],
+               "annotations": [{k: a.get(k) for k in ("key", "type", "page", "text", "comment")} for a in anns
+                               if a.get("text") or a.get("comment")]}
+        os.makedirs(fulltext_dir(), exist_ok=True)
+        tmp = os.path.join(fulltext_dir(), f"{key}.json.tmp")
+        old_umask = os.umask(0o027)
+        try:
+            with open(tmp, "w", encoding="utf-8") as f:
+                json.dump(doc, f, ensure_ascii=False)
+            os.replace(tmp, os.path.join(fulltext_dir(), f"{key}.json"))
+        finally:
+            os.umask(old_umask)
+        return {"pages": len(doc["pages"]), "annotations": len(doc["annotations"])}
+    except ToolError as e:
+        return f"error: {e}"
+
+
+def _state_path() -> str:
+    from . import config
+    # next to fulltext/, not inside it: the DOI MCP reads every .json file there as an item
+    return os.path.join(config.KNOWLEDGE_DIR, ".fulltext_state.json")
+
+
+def _load_state() -> dict:
+    try:
+        return json.load(open(_state_path(), encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+
+
+def _save_state(st: dict) -> None:
+    tmp = _state_path() + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(st, f)
+    os.replace(tmp, _state_path())
+
+
+async def index_changed(max_items: int | None = 25) -> dict:
+    """Bring KNOWLEDGE_DIR/fulltext up to date with the library: index items with a PDF/EPUB
+    that have no file yet, re-index items whose attachment or annotations changed since the last
+    run, remove the files of items no longer in the library. At most max_items items per run
+    (None: all); the rest stays in the state file for the next run. An item that failed (no file
+    on WebDAV, unreadable PDF) is retried only after its attachment or annotations change."""
+    from . import snapshot
+    from .core import req
+    await asyncio.to_thread(snapshot.refresh)
+    snap = {it["key"]: it for it in snapshot_items()}
+    if not snap:
+        raise ToolError("the library snapshot is missing or empty: refresh_library_snapshot")
+    st = _load_state()
+    since = st.get("version")
+    skip: dict[str, str] = dict(st.get("skip") or {})
+    att_parent = {a["key"]: k for k, it in snap.items() for a in it.get("attachments") or []}
+    r = await req("GET", "/items", params={"limit": 1, "format": "keys"})
+    if r.status_code != 200:
+        raise ToolError(f"library not readable (HTTP {r.status_code})")
+    version = int(r.headers.get("Last-Modified-Version") or 0)
+    changed: list[str] = []
+    if since is not None and version > int(since):
+        start = 0
+        while True:
+            r = await req("GET", "/items", params={"since": since, "limit": 100, "start": start})
+            if r.status_code != 200:
+                raise ToolError(f"changes not readable (HTTP {r.status_code})")
+            page = r.json()
+            for o in page:
+                d = o["data"]
+                if d["itemType"] == "annotation":
+                    parent = att_parent.get(d.get("parentItem") or "")
+                elif d["itemType"] == "attachment":
+                    parent = d.get("parentItem") or None
+                else:
+                    parent = None  # a metadata change leaves the page texts as they are
+                if parent in snap:
+                    changed.append(parent)
+                    skip.pop(parent, None)
+            start += len(page)
+            if not page or start >= int(r.headers.get("Total-Results", "0")):
+                break
+    folder = fulltext_dir()
+    have = {f[:-5] for f in os.listdir(folder) if f.endswith(".json")} if os.path.isdir(folder) else set()
+    removed = sorted(k for k in have if k not in snap)
+    for k in removed:
+        os.remove(os.path.join(folder, f"{k}.json"))
+    missing = [k for k, it in snap.items() if it.get("attachments") and k not in have and k not in skip]
+    pending = [k for k in dict.fromkeys(list(st.get("pending") or []) + changed + missing)
+               if k in snap and snap[k].get("attachments")]
+    batch = pending if max_items is None else pending[:max_items]
+    results: dict[str, Any] = {}
+    for k in batch:
+        res = await _index_one(k, snap[k])
+        results[k] = res
+        if isinstance(res, str) and not res.startswith("scan waiting"):
+            skip[k] = res
+    retry = [k for k, v in results.items() if isinstance(v, str) and v.startswith("scan waiting")]
+    rest = pending[len(batch):] + retry
+    _save_state({"version": version, "pending": rest, "skip": skip,
+                 "last_run": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())})
+    indexed = [v for v in results.values() if isinstance(v, dict)]
+    return {"status": "ok", "mode": "changed", "indexed": results, "items_indexed": len(indexed),
+            "pages": sum(v["pages"] for v in indexed), "removed": removed, "remaining": len(rest),
+            "skipped_failures": len(skip), **({"next": "call again for the remaining items"} if rest else {})}
+
+
 @tool
 async def index_fulltext(
     item_keys: Annotated[list[str] | None, Field(description="Item keys (max 25 per call)")] = None,
     collection: Annotated[str | None, Field(description="Collection name or path: every item in it with a PDF/EPUB")] = None,
     force: Annotated[bool, Field(description="Write again even if already indexed")] = False,
+    changed: Annotated[bool, Field(description="The whole library, incrementally: items not indexed yet, items whose "
+                                   "PDF or annotations changed since the last run; files of deleted items are removed")] = False,
+    max_items: Annotated[int, Field(ge=1, le=200, description="With changed: items to process in this call")] = 25,
 ) -> dict:
     """Write the text of each item's PDF or EPUB, page by page, and its highlights and comments to
     KNOWLEDGE_DIR/fulltext/KEY.json for the shared corpus that the DOI MCP's search_everything
     reads together with the Obsidian notes. Scans use their OCR text (a scan without OCR is
     queued and reported). Max 25 items per call; items already indexed are skipped unless
-    force. Run it once per collection, then after adding PDFs or annotating."""
-    import os as _os
+    force. With changed=true it keeps the whole library indexed instead (index_worker.py does
+    the same daily): new items, changed PDFs and annotations, deleted items."""
+    if changed:
+        if item_keys or collection:
+            raise ToolError("changed works on the whole library: leave out item_keys and collection")
+        return await index_changed(max_items)
     snap = {it["key"]: it for it in snapshot_items()}
     if collection:
         want = collection.strip().lower()
@@ -202,43 +330,11 @@ async def index_fulltext(
         keys = [key_of(k) for k in item_keys or []]
     if not keys:
         raise ToolError("give item_keys or collection")
-    _os.makedirs(fulltext_dir(), exist_ok=True)
-    todo = [k for k in dict.fromkeys(keys) if force or not _os.path.exists(_os.path.join(fulltext_dir(), f"{k}.json"))]
+    todo = [k for k in dict.fromkeys(keys) if force or not os.path.exists(os.path.join(fulltext_dir(), f"{k}.json"))]
     done_before = len(set(keys)) - len(todo)
     results, remaining = {}, todo[25:]
     for key in todo[:25]:
-        try:
-            atts = sorted((snap.get(key) or {}).get("attachments") or [], key=lambda a: a["contentType"] != "application/pdf")
-            if atts:
-                att_key, ctype = atts[0]["key"], atts[0]["contentType"]
-            else:
-                att = await pdf_attachment(key)
-                att_key, ctype = att["key"], "application/pdf"
-            pages, ocr = await asyncio.to_thread(pages_from_webdav, att_key, ctype)
-            if ocr:
-                results[key] = f"scan waiting for OCR ({ocr}): try again later"
-                continue
-            if pages is None:
-                results[key] = "no file on WebDAV"
-                continue
-            anns = await annotations_of(key)
-            it = snap.get(key) or {}
-            doc = {"item": key, "attachment": att_key, "title": it.get("title"), "creators": it.get("creators"),
-                   "year": it.get("year"), "indexed": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
-                   "pages": [{"page": label, "text": text} for label, text in pages if text.strip()],
-                   "annotations": [{k: a.get(k) for k in ("key", "type", "page", "text", "comment")} for a in anns
-                                   if a.get("text") or a.get("comment")]}
-            tmp = _os.path.join(fulltext_dir(), f"{key}.json.tmp")
-            old_umask = _os.umask(0o027)
-            try:
-                with open(tmp, "w", encoding="utf-8") as f:
-                    json.dump(doc, f, ensure_ascii=False)
-                _os.replace(tmp, _os.path.join(fulltext_dir(), f"{key}.json"))
-            finally:
-                _os.umask(old_umask)
-            results[key] = {"pages": len(doc["pages"]), "annotations": len(doc["annotations"])}
-        except ToolError as e:
-            results[key] = f"error: {e}"
+        results[key] = await _index_one(key, snap.get(key) or {})
     indexed = [v for v in results.values() if isinstance(v, dict)]
     return {"status": "ok", "indexed": results, "items_indexed": len(indexed), "pages": sum(v["pages"] for v in indexed),
             "annotations": sum(v["annotations"] for v in indexed), "already_done": done_before,

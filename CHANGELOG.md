@@ -1,5 +1,22 @@
 # Changelog
 
+## Unreleased
+
+Added
+- `index_fulltext(changed=true, max_items)`: the whole library kept indexed incrementally (new items, changed attachments and annotations, files of deleted items removed), state in `KNOWLEDGE_DIR/.fulltext_state.json`; `graphist-zotero-index` (root wrapper `index_worker.py`) and `deploy/zotero-index.{service,timer}` run it daily.
+- `library.json` items carry `abstract` (at most 4000 characters); `schema_version` stays 1. Copy `tests/fixtures/contract/library.json` to the DOI MCP.
+- `get_page_layout`: figures and tables of a PDF page with caption labels and boxes (raster images, vector drawing clusters, ruled tables).
+- `annotate_region`: an area annotation around a figure or table by caption label or region id (caption included by default), or around any rectangle; `dry_run`.
+- `merge_duplicates`: plan first, then `confirm=true` with a `plan_token` tied to the versions of every item involved; fills empty fields, merges Extra lines, tags, collections and relations (`dc:replaces` on the kept item), moves attachments and notes, re-links related items, trashes the others only after every child has moved. Different item types or DOIs are refused.
+- `create_item_from_isbn`: a book from Open Library, Google Books or the DNB (DNB first for `978-3`), with check digit validation, the same expected title/author/year check and `Verified:` line as `create_item_from_doi`, duplicate check on the ISBN-13 of books, `dry_run`.
+- `import_items`: up to 100 items from CSL JSON or BibTeX/BibLaTeX (new `bibtex.py`, standard library only); records without a faithful Zotero type are refused, duplicates found by DOI, ISBN or title + first author + year, citation keys kept in Extra, unmapped fields reported, `dry_run`.
+- `update_annotation` (comment, colour, tags) and `delete_annotation` (permanent, needs `confirm=true`).
+- `if_exists` (`skip`, `file`, `duplicate`) on `create_item_from_doi`, `create_item_from_isbn` and `import_items`; `file` adds the requested collections and tags to the existing item. `allow_duplicate` still works.
+
+Changed
+- `create_item_from_doi` checks the library before asking Crossref: a DOI already present answers `duplicate` without a Crossref request, even if Crossref is unreachable.
+- The DOI index also holds the ISBN-13s of books (`library_isbns`).
+
 ## 0.10.0
 
 Changed

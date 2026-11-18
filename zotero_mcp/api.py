@@ -14,6 +14,8 @@ RETRIES = 3
 TRANSPORT: httpx.BaseTransport | None = None  # tests inject an httpx.MockTransport here
 _DOI_PREFIX = re.compile(r"^(https?://(dx\.)?doi\.org/|doi:\s*)", re.I)
 _EXTRA_DOI = re.compile(r"^DOI:\s*(\S+)", re.M | re.I)
+_EXTRA_ISBN = re.compile(r"^ISBN:\s*(.+)$", re.M | re.I)
+_ISBN_RE = re.compile(r"(?:97[89][\s-]?)?(?:\d[\s-]?){9}[\dXx]")
 # The outcome of a bibliographic check, kept in Extra so that the snapshot and the notes can tell a
 # verified item from one imported as it came: "Verified: 2026-11-04 match verify_doi registered_match"
 _VERIFIED = re.compile(r"^Verified:\s*(\d{4}-\d{2}-\d{2})\s+(match|mismatch|retracted|unverified)\b\s*(.*)$", re.M | re.I)
@@ -77,6 +79,31 @@ def item_dois(data: dict) -> list[str]:
     """DOIs of an item: the DOI field, then "DOI: ..." lines in Extra (types without a DOI field)."""
     found = [data.get("DOI") or ""] + _EXTRA_DOI.findall(data.get("extra") or "")
     return [d for d in map(norm_doi, found) if d]
+
+
+def norm_isbn(s: str | None) -> str | None:
+    """ISBN-13 digits of an ISBN-10 or ISBN-13 with a valid check digit, else None."""
+    d = re.sub(r"[^0-9Xx]", "", s or "").upper()
+    if len(d) == 10 and re.fullmatch(r"\d{9}[\dX]", d):
+        if sum((10 - i) * (10 if c == "X" else int(c)) for i, c in enumerate(d)) % 11:
+            return None
+        d = "978" + d[:9]
+        return d + str((10 - sum((3 if i % 2 else 1) * int(c) for i, c in enumerate(d)) % 10) % 10)
+    if len(d) == 13 and d.isdigit() and d[:3] in ("978", "979"):
+        return d if sum((3 if i % 2 else 1) * int(c) for i, c in enumerate(d)) % 10 == 0 else None
+    return None
+
+
+def item_isbns(data: dict) -> list[str]:
+    """ISBN-13s of an item: the ISBN field (often several, space- or comma-separated), then
+    "ISBN: ..." lines in Extra."""
+    text = " ".join([data.get("ISBN") or ""] + _EXTRA_ISBN.findall(data.get("extra") or ""))
+    out = []
+    for m in _ISBN_RE.findall(text):
+        n = norm_isbn(m)
+        if n and n not in out:
+            out.append(n)
+    return out
 
 
 class Client:
