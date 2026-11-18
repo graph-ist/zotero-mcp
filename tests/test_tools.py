@@ -476,7 +476,7 @@ def test_refresh_library_snapshot_full_then_incremental(zot, call):
 
 def test_tool_count_and_names():
     names = sorted(t.name for t in run(core.mcp.list_tools()))
-    assert len(names) == 45 and {"merge_duplicates", "update_item_links", "set_verification", "create_item_from_patent", "index_fulltext",
+    assert len(names) == 47 and {"get_page_layout", "annotate_region", "merge_duplicates", "update_item_links", "set_verification", "create_item_from_patent", "index_fulltext",
                                  "update_annotation", "delete_annotation", "create_item_from_isbn", "import_items"} <= set(names) and "set_item_collections" not in names
 
 

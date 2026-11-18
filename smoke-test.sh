@@ -22,6 +22,7 @@ if [[ "$1" == "all" ]]; then
   call get_annotations '{"key":"LNNRR6GY","limit":5}'
   call list_related '{"key":"LNNRR6GY"}'
   call get_outline '{"key":"LNNRR6GY"}'
+  call get_page_layout '{"key":"LNNRR6GY","page":1}'
   call export_annotations '{"key":"LNNRR6GY"}'
   call list_trash '{"limit":3}'
   call list_saved_searches '{}'
