@@ -3,7 +3,7 @@
 ## Unreleased
 
 Added
-- `index_fulltext(changed=true, max_items)`: the whole library kept indexed incrementally (new items, changed attachments and annotations, files of deleted items removed), state in `KNOWLEDGE_DIR/.fulltext_state.json`; `index_worker.py` and `deploy/zotero-index.{service,timer}` run it daily.
+- `index_fulltext(changed=true, max_items)`: the whole library kept indexed incrementally (new items, changed attachments and annotations, files of deleted items removed), state in `KNOWLEDGE_DIR/.fulltext_state.json`; `graphist-zotero-index` (root wrapper `index_worker.py`) and `deploy/zotero-index.{service,timer}` run it daily.
 - `library.json` items carry `abstract` (at most 4000 characters); `schema_version` stays 1. Copy `tests/fixtures/contract/library.json` to the DOI MCP.
 - `get_page_layout`: figures and tables of a PDF page with caption labels and boxes (raster images, vector drawing clusters, ruled tables).
 - `annotate_region`: an area annotation around a figure or table by caption label or region id (caption included by default), or around any rectangle; `dry_run`.
@@ -16,6 +16,15 @@ Added
 Changed
 - `create_item_from_doi` checks the library before asking Crossref: a DOI already present answers `duplicate` without a Crossref request, even if Crossref is unreachable.
 - The DOI index also holds the ISBN-13s of books (`library_isbns`).
+
+## 0.10.0
+
+Changed
+- Published on PyPI as `graphist-zotero-mcp`, MIT licence; `uvx graphist-zotero-mcp` runs it without a clone. Commands `graphist-zotero-mcp`, `graphist-zotero-snapshot`, `graphist-zotero-ocr`; `python -m zotero_mcp` also works.
+- `snapshot.py` and `ocr_worker.py` moved into the package (`zotero_mcp/snapshot.py`, `zotero_mcp/ocr_worker.py`), so the installed package carries them; the scripts at the root are now wrappers and the systemd units keep working unchanged.
+- Without `ZOTERO_OCR_DIR` and without `/var/lib/zotero-mcp`, the OCR folder is `~/.local/state/zotero-mcp/ocr` (or under `$XDG_STATE_HOME`). The OCR worker imports `fcntl` only when it runs the queue, so the server also starts on Windows.
+
+Added
 - `MCP_ALLOW_QUERY_TOKEN=true`: the token is also accepted as `?token=` in the URL, for Claude web's connector form, which has only a name and a URL. Off by default.
 
 ## 0.9.1 (2026-11-04)

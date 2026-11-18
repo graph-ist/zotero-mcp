@@ -77,6 +77,12 @@ def page_regions(page) -> dict:
                 tables = [tuple(t.bbox) for t in found.tables if t.row_count >= 2]
             except Exception:  # noqa: BLE001
                 warnings.append("table detection failed on this page")
+    # PyMuPDF 2.x reports the box of the cell text, inside the rules: grow each table over the
+    # cluster of rules that covers most of it, so the box (and the annotation) holds the grid
+    for i, t in enumerate(tables):
+        for s, r in raw:
+            if s == "drawing" and _inter(r, t) >= 0.5 * _area(t):
+                tables[i] = t = _union(t, r)
     tables = [t for t in tables if _area(t) >= 0.005 * full]
     # merge touching or overlapping graphic fragments (panels of one figure), keep tables apart
     gap = 0.02 * max(W, H)

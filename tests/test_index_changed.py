@@ -12,7 +12,7 @@ BODY = " Body text long enough not to look like a scan." * 6
 
 
 def _clean():
-    import snapshot
+    from zotero_mcp import snapshot
     for p in (snapshot.out_path(), checks._state_path()):
         if os.path.exists(p):
             os.remove(p)
@@ -69,13 +69,13 @@ def test_changed_indexes_new_then_only_what_changed(zot, call):
     assert gone["removed"] == [a] and _files() == [b]
 
 
-def test_changed_respects_max_items_and_the_worker_finishes(zot, call, capsys):
+def test_changed_respects_max_items_and_the_worker_finishes(zot, call, capsys, monkeypatch):
     _clean()
     keys = [_with_pdf(zot, f"Paper {i}")[0] for i in range(3)]
     part = call("index_fulltext", changed=True, max_items=1)
     assert part["items_indexed"] == 1 and part["remaining"] == 2 and "next" in part
-    import index_worker
-    index_worker.main.__globals__["sys"].argv = ["index_worker.py"]
+    from zotero_mcp import index_worker
+    monkeypatch.setattr(index_worker.sys, "argv", ["graphist-zotero-index"])
     index_worker.main()
     out = json.loads(capsys.readouterr().out)
     assert out["items_indexed"] == 2 and out["remaining"] == 0 and _files() == sorted(keys)

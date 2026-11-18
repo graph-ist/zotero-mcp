@@ -454,7 +454,7 @@ def test_doi_index_is_incremental(zot, call):
 
 
 def test_refresh_library_snapshot_full_then_incremental(zot, call):
-    import snapshot
+    from zotero_mcp import snapshot
     c = zot.add_collection("Phil")
     a = article(zot, doi="10.1/a", collections=[c], tags=["read"])
     zot.add_item("attachment", parentItem=a, contentType="application/pdf")
@@ -481,7 +481,7 @@ def test_tool_count_and_names():
 
 
 def test_worker_uses_shared_client(zot):
-    import ocr_worker as w
+    from zotero_mcp import ocr_worker as w
     w._client = None
     k = article(zot, language="it-IT")
     att = zot.add_item("attachment", parentItem=k, contentType="application/pdf")
@@ -553,7 +553,7 @@ def test_create_item_from_doi_records_the_verification(zot, call):
     assert out["status"] == "ok" and out["verified"]["status"] == "match" and out["verified"]["detail"] == "verify_doi registered_match"
     extra = zot.items[checked["created_keys"][0]]["data"]["extra"]
     assert extra.count("Verified:") == 1 and "verify_doi registered_match" in extra
-    import snapshot
+    from zotero_mcp import snapshot
     assert snapshot.entry(zot.items[checked["created_keys"][0]]["data"])["verified"]["status"] == "match"
 
 
@@ -570,13 +570,13 @@ def test_create_item_from_patent(zot, call):
     dup = call("create_item_from_patent", number="EP3500000", title="Foldable display device")
     assert dup["status"] == "duplicate" and dup["existing"]["key"] == out["created_keys"][0]
     assert "not a patent" in call("create_item_from_patent", number="10.1000/x", title="t")["detail"]
-    import snapshot
+    from zotero_mcp import snapshot
     assert snapshot.entry(d)["patent_number"] == "EP3500000B1"
 
 
 def test_writes_schedule_a_snapshot_refresh(zot, monkeypatch):
     """A successful write schedules library.json to be refreshed; GETs and failures do not."""
-    import snapshot
+    from zotero_mcp import snapshot
     monkeypatch.setattr(config, "AUTO_REFRESH", True)
     if os.path.exists(snapshot.out_path()):
         os.remove(snapshot.out_path())
@@ -596,14 +596,14 @@ def test_writes_schedule_a_snapshot_refresh(zot, monkeypatch):
 
 
 def test_index_fulltext_writes_pages_and_annotations(zot, call):
-    import snapshot
+    from zotero_mcp import snapshot
     k = article(zot, title="Design epistemology", doi="10.1000/ft")
     att = zot.add_item("attachment", parentItem=k, contentType="application/pdf")
     body = " Body text long enough not to look like a scan." * 6
     put_webdav(att, "p.pdf", make_pdf(["First page about affordances." + body, "Second page about perception." + body]))
     zot.add_item("annotation", parentItem=att, annotationType="highlight", annotationText="about affordances",
                  annotationComment="key passage", annotationPageLabel="1", annotationSortIndex="00000|000000|00000")
-    import snapshot
+    from zotero_mcp import snapshot
     if os.path.exists(snapshot.out_path()):
         os.remove(snapshot.out_path())  # other tests leave a snapshot of another fake library behind
     call("refresh_library_snapshot")
@@ -649,7 +649,7 @@ def test_http_auth_requires_bearer_header_and_status_is_loopback_only(monkeypatc
 def test_contract_fixture_matches_the_snapshot_writer(zot):
     """tests/fixtures/contract/library.json is what the DOI MCP's tests read: regenerate it with
     UPDATE_CONTRACT=1 when the snapshot format changes, and copy it to the DOI MCP."""
-    import snapshot
+    from zotero_mcp import snapshot
     c = zot.add_collection("Design", key="C0000001")
     sub = zot.add_collection("Theory", parent=c, key="C0000002")
     a = zot.add_item("journalArticle", key="ZKEY0001", title="Designerly ways of knowing", date="1982", DOI="10.1016/0142-694X(82)90040-0",

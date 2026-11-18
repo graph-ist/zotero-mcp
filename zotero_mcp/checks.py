@@ -15,7 +15,7 @@ from .pdf import annotations_of, pages_from_webdav, pdf_attachment, text_from_we
 
 
 def snapshot_items() -> list[dict]:
-    import snapshot  # top-level module next to the package
+    from . import snapshot
     try:
         return json.load(open(snapshot.out_path(), encoding="utf-8")).get("items", [])
     except (OSError, ValueError):
@@ -238,7 +238,7 @@ async def index_changed(max_items: int | None = 25) -> dict:
     run, remove the files of items no longer in the library. At most max_items items per run
     (None: all); the rest stays in the state file for the next run. An item that failed (no file
     on WebDAV, unreadable PDF) is retried only after its attachment or annotations change."""
-    import snapshot  # top-level module next to the package
+    from . import snapshot
     from .core import req
     await asyncio.to_thread(snapshot.refresh)
     snap = {it["key"]: it for it in snapshot_items()}

@@ -52,7 +52,7 @@ def ocr_cached(att_key: str, ext: str) -> str | None:
 
 def queue_ocr(att_key: str) -> str:
     """Scanned PDF without OCR yet: queue it once (replaced on WebDAV only while unannotated)."""
-    import ocr_worker
+    from . import ocr_worker
     path = os.path.join(config.OCR_DIR, "status", f"{att_key}.json")
     if os.path.exists(path):
         state = json.load(open(path)).get("state")

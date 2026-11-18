@@ -1,0 +1,42 @@
+name: Release
+
+# Publishes to PyPI when a GitHub release is published (tag vX.Y.Z matching VERSION).
+# Authentication uses PyPI trusted publishing (OIDC): add a "pending publisher" on pypi.org
+# (project graphist-zotero-mcp, workflow release.yml, environment pypi). No token is stored here.
+# Off until the repository variable PYPI_PUBLISH is set to "true" (Settings -> Secrets and
+# variables -> Actions -> Variables): until then the server is installed from GitHub.
+
+on:
+  release:
+    types: [published]
+
+jobs:
+  build:
+    if: vars.PYPI_PUBLISH == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+      - name: Check that the tag matches the package version
+        run: |
+          v=$(python3 -c "import re;print(re.search(r'VERSION = \"(.+)\"', open('zotero_mcp/config.py').read())[1])")
+          [ "${GITHUB_REF_NAME#v}" = "$v" ] || { echo "tag $GITHUB_REF_NAME != version $v"; exit 1; }
+      - run: uv sync --locked && uv run pytest -q
+      - run: uv build
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: dist/
+
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    environment: pypi
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist/
+      - uses: pypa/gh-action-pypi-publish@release/v1
