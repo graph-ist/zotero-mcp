@@ -1,0 +1,30 @@
+[Unit]
+Description=Index changed Zotero PDFs and annotations for the shared corpus
+After=network-online.target
+Wants=network-online.target
+OnFailure=ntfy-alert@%n.service
+
+[Service]
+Type=oneshot
+User=zotero-mcp
+SupplementaryGroups=zotero-dav knowledge
+WorkingDirectory=/home/pi/zotero-mcp
+EnvironmentFile=/etc/zotero-mcp/env
+Environment=PYTHONDONTWRITEBYTECODE=1
+Environment=ZOTERO_OCR_DIR=/var/lib/zotero-mcp/ocr
+Environment=KNOWLEDGE_DIR=/var/lib/knowledge
+ExecStart=/home/pi/zotero-mcp/.venv/bin/python /home/pi/zotero-mcp/index_worker.py
+Nice=15
+IOSchedulingClass=idle
+TimeoutStartSec=6h
+
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=tmpfs
+BindReadOnlyPaths=/home/pi/zotero-mcp
+ReadOnlyPaths=/srv/zotero-webdav
+ReadWritePaths=/var/lib/zotero-mcp/ocr /var/lib/knowledge
+PrivateTmp=yes
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+CapabilityBoundingSet=
+ProtectProc=invisible

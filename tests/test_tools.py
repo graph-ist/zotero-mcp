@@ -655,6 +655,7 @@ def test_contract_fixture_matches_the_snapshot_writer(zot):
     a = zot.add_item("journalArticle", key="ZKEY0001", title="Designerly ways of knowing", date="1982", DOI="10.1016/0142-694X(82)90040-0",
                      creators=[{"creatorType": "author", "lastName": "Cross", "firstName": "Nigel"}], collections=[sub],
                      tags=["cited/thesis", "core/seminal", "sub/330304-design-theory"],
+                     abstractNote="Design has its own  things to know\nand ways of knowing them.",
                      extra="Citation Key: cross1982designerly\nVerified: 2026-11-04 match verify_doi registered_match")
     zot.add_item("attachment", key="ATT00001", parentItem=a, contentType="application/pdf")
     zot.add_item("book", key="ZKEY0002", title="The reflective practitioner", date="1983", ISBN="9780465068784",

@@ -3,7 +3,7 @@
 the Pi (DOI MCP literature maps, knowledge views) that must not call the Zotero API.
 
 Items (no notes, annotations or attachments as items) with key, type, title, creators, year,
-DOI (also "DOI:" lines in Extra), ISBN, tags, collection paths and keys, PDF/EPUB attachment keys.
+DOI (also "DOI:" lines in Extra), ISBN, abstract (at most 4000 characters), tags, collection paths and keys, PDF/EPUB attachment keys.
 Nothing is written when the library version has not changed since the last snapshot; otherwise
 only the items changed or deleted since then are fetched and merged into the previous snapshot.
 Run by the MCP tool refresh_library_snapshot or by hand: snapshot.py [--force].
@@ -41,6 +41,7 @@ def entry(d: dict, attachments: list | None = None) -> dict:
             "patent_number": re.sub(r"[\s.,/-]", "", d["patentNumber"]).upper() if d.get("patentNumber") else None,
             "citekey": (m.group(1) if (m := re.search(r"^Citation Key:\s*(\S+)", d.get("extra") or "", re.M | re.I)) else None),
             "verified": api.parse_verified(d.get("extra")),
+            "abstract": " ".join((d.get("abstractNote") or "").split())[:4000] or None,
             "tags": [t["tag"] for t in d.get("tags", [])],
             "collection_keys": list(d.get("collections", [])),
             "attachments": attachments or []}
