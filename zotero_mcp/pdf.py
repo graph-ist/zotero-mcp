@@ -10,7 +10,7 @@ from typing import Annotated, Literal
 from pydantic import Field
 
 from . import config
-from .core import ToolError, children, fetch_item, key_of, paginate, patch, post_items, req, tool
+from .core import ToolError, children, fail, fetch_item, key_of, paginate, patch, post_items, req, tool
 
 
 # ---- files -----------------------------------------------------------------------------------------
@@ -345,6 +345,73 @@ async def annotate_pdf(
     out = await post_items([ann])
     out |= {"attachment_key": att["key"], "page": loc["pageLabel"]}
     return out
+
+
+async def _annotation(key: str) -> dict:
+    it = await fetch_item(key)
+    if it["data"]["itemType"] != "annotation":
+        raise ToolError(f"{it['key']} is a {it['data']['itemType']}, not an annotation (see get_annotations)")
+    return it
+
+
+def _ann_view(d: dict) -> dict:
+    return {k: v for k, v in {"key": d["key"], "type": d.get("annotationType"), "page": d.get("annotationPageLabel"),
+                              "text": d.get("annotationText"), "comment": d.get("annotationComment"),
+                              "color": d.get("annotationColor"), "tags": [t["tag"] for t in d.get("tags", [])],
+                              "attachment": d.get("parentItem")}.items() if v not in (None, "", [])}
+
+
+@tool
+async def update_annotation(
+    key: Annotated[str, Field(description="Annotation key, from get_annotations or annotate_pdf")],
+    comment: Annotated[str | None, Field(description="New comment; an empty string removes it")] = None,
+    color: Literal["yellow", "red", "green", "blue", "purple", "magenta", "orange", "gray"] | None = None,
+    tags: Annotated[list[str] | None, Field(description="Replace all tags (an empty list removes them)")] = None,
+    add_tags: list[str] | None = None,
+    remove_tags: list[str] | None = None,
+) -> dict:
+    """Change the comment, colour or tags of an annotation. The marked text and its position
+    cannot be changed: to mark another passage, create a new annotation and delete this one."""
+    if tags is not None and (add_tags or remove_tags):
+        raise ToolError("give tags (replace) or add_tags/remove_tags, not both")
+    if comment is None and color is None and tags is None and not add_tags and not remove_tags:
+        raise ToolError("give at least one of comment, color, tags, add_tags, remove_tags")
+    it = await _annotation(key)
+    d = it["data"]
+    body: dict = {}
+    if comment is not None:
+        body["annotationComment"] = comment
+    if color is not None:
+        body["annotationColor"] = COLORS[color]
+    if tags is not None:
+        body["tags"] = [{"tag": t} for t in dict.fromkeys(tags)]
+    elif add_tags or remove_tags:
+        rm = set(remove_tags or [])
+        cur = [t for t in d.get("tags", []) if t["tag"] not in rm]
+        have = {t["tag"] for t in cur}
+        body["tags"] = cur + [{"tag": t} for t in dict.fromkeys(add_tags or []) if t not in have]
+    out = await patch(it["key"], it["version"], body)
+    if out.get("status") == "ok":
+        out["annotation"] = _ann_view(d | body)
+    return out
+
+
+@tool
+async def delete_annotation(
+    key: Annotated[str, Field(description="Annotation key, from get_annotations or annotate_pdf")],
+    confirm: Annotated[bool, Field(description="False shows what would be deleted; true deletes it")] = False,
+) -> dict:
+    """Delete an annotation permanently, as Zotero's reader does: annotations do not go to the
+    trash and cannot be restored. Without confirm=True only shows the annotation."""
+    it = await _annotation(key)
+    view = _ann_view(it["data"])
+    if not confirm:
+        return {"status": "confirm_required", "annotation": view,
+                "detail": "permanent deletion; call again with confirm=true"}
+    r = await req("DELETE", f"/items/{it['key']}", headers={"If-Unmodified-Since-Version": str(it["version"])})
+    if r.status_code != 204:
+        return fail(r)
+    return {"status": "deleted", "annotation": view}
 
 
 # ---- export of annotations ------------------------------------------------------------------------

@@ -149,6 +149,20 @@ def test_create_item_from_doi_maps_crossref_and_refuses_duplicates(zot, call):
     assert "Crossref" in call("create_item_from_doi", doi="10.9999/none")["detail"]
 
 
+def test_create_item_from_doi_if_exists_file_adds_links_only(zot, call):
+    c1, c2 = zot.add_collection("A"), zot.add_collection("B")
+    k = article(zot, doi="10.1000/abc", collections=[c1], tags=["old"])
+    v = zot.items[k]["version"]
+    out = call("create_item_from_doi", doi="10.1000/ABC", collection_keys=[c1, c2], tags=["old", "new"], if_exists="file")
+    assert out["status"] == "duplicate" and out["filed"] == {"collections_added": [c2], "tags_added": ["new"]}
+    d = zot.items[k]["data"]
+    assert d["collections"] == [c1, c2] and [t["tag"] for t in d["tags"]] == ["old", "new"] and len(zot.items) == 1
+    again = call("create_item_from_doi", doi="10.1000/abc", collection_keys=[c2], if_exists="file")
+    assert again["filed"] == {"collections_added": [], "tags_added": []} and zot.items[k]["version"] == v + 1
+    skip = call("create_item_from_doi", doi="10.1000/abc", collection_keys=[zot.add_collection("C")])
+    assert skip["status"] == "duplicate" and "filed" not in skip and len(zot.items[k]["data"]["collections"]) == 2
+
+
 def test_create_collection(zot, call):
     p = call("create_collection", name="Top")
     c = call("create_collection", name="Sub", parent_key=p["key"])
@@ -238,6 +252,35 @@ def test_annotate_pdf_locates_and_creates(zot, call):
     assert pos["pageIndex"] == 1 and len(pos["rects"]) == 2 and d["tags"] == [{"tag": "method"}]
     missing = call("annotate_pdf", key=k, text="not in the document")
     assert "text not found" in missing["detail"] and "ocr_pdf" in missing["detail"]
+
+
+def test_update_annotation(zot, call):
+    k = article(zot)
+    att = zot.add_item("attachment", parentItem=k, contentType="application/pdf")
+    a = zot.add_item("annotation", parentItem=att, annotationType="highlight", annotationText="tacit",
+                     annotationComment="old", annotationColor="#ffd400", tags=["keep", "drop"])
+    out = call("update_annotation", key=a, comment="new", color="green", add_tags=["method"], remove_tags=["drop"])
+    assert out["status"] == "ok" and out["annotation"]["comment"] == "new"
+    d = zot.items[a]["data"]
+    assert d["annotationColor"] == "#5fb236" and [t["tag"] for t in d["tags"]] == ["keep", "method"]
+    assert d["annotationText"] == "tacit"
+    call("update_annotation", key=a, tags=[], comment="")
+    assert zot.items[a]["data"]["tags"] == [] and zot.items[a]["data"]["annotationComment"] == ""
+    assert "not an annotation" in call("update_annotation", key=k, comment="x")["detail"]
+    assert "at least one" in call("update_annotation", key=a)["detail"]
+    assert "not both" in call("update_annotation", key=a, tags=["a"], add_tags=["b"])["detail"]
+
+
+def test_delete_annotation_needs_confirm_and_is_permanent(zot, call):
+    k = article(zot)
+    att = zot.add_item("attachment", parentItem=k, contentType="application/pdf")
+    a = zot.add_item("annotation", parentItem=att, annotationType="highlight", annotationText="tacit",
+                     annotationPageLabel="4")
+    preview = call("delete_annotation", key=a)
+    assert preview["status"] == "confirm_required" and preview["annotation"]["page"] == "4" and a in zot.items
+    out = call("delete_annotation", key=a, confirm=True)
+    assert out["status"] == "deleted" and a not in zot.items and any(key == a for _, key in zot.deleted)
+    assert "not an annotation" in call("delete_annotation", key=att, confirm=True)["detail"] and att in zot.items
 
 
 def test_annotate_pdf_validation(zot, call):
@@ -433,7 +476,8 @@ def test_refresh_library_snapshot_full_then_incremental(zot, call):
 
 def test_tool_count_and_names():
     names = sorted(t.name for t in run(core.mcp.list_tools()))
-    assert len(names) == 40 and {"update_item_links", "set_verification", "create_item_from_patent", "index_fulltext"} <= set(names) and "set_item_collections" not in names
+    assert len(names) == 44 and {"update_item_links", "set_verification", "create_item_from_patent", "index_fulltext",
+                                 "update_annotation", "delete_annotation", "create_item_from_isbn", "import_items"} <= set(names) and "set_item_collections" not in names
 
 
 def test_worker_uses_shared_client(zot):

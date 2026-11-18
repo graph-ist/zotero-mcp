@@ -3,6 +3,14 @@
 ## Unreleased
 
 Added
+- `create_item_from_isbn`: a book from Open Library, Google Books or the DNB (DNB first for `978-3`), with check digit validation, the same expected title/author/year check and `Verified:` line as `create_item_from_doi`, duplicate check on the ISBN-13 of books, `dry_run`.
+- `import_items`: up to 100 items from CSL JSON or BibTeX/BibLaTeX (new `bibtex.py`, standard library only); records without a faithful Zotero type are refused, duplicates found by DOI, ISBN or title + first author + year, citation keys kept in Extra, unmapped fields reported, `dry_run`.
+- `update_annotation` (comment, colour, tags) and `delete_annotation` (permanent, needs `confirm=true`).
+- `if_exists` (`skip`, `file`, `duplicate`) on `create_item_from_doi`, `create_item_from_isbn` and `import_items`; `file` adds the requested collections and tags to the existing item. `allow_duplicate` still works.
+
+Changed
+- `create_item_from_doi` checks the library before asking Crossref: a DOI already present answers `duplicate` without a Crossref request, even if Crossref is unreachable.
+- The DOI index also holds the ISBN-13s of books (`library_isbns`).
 - `MCP_ALLOW_QUERY_TOKEN=true`: the token is also accepted as `?token=` in the URL, for Claude web's connector form, which has only a name and a URL. Off by default.
 
 ## 0.9.1 (2026-11-04)

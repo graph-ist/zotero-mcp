@@ -35,6 +35,8 @@ TEMPLATES = {
                "institution", "date", "pages", "language", "shortTitle", "url", "accessDate", "extra"],
     "webpage": ["title", "abstractNote", "websiteTitle", "websiteType", "date", "shortTitle", "url",
                 "accessDate", "language", "rights", "extra"],
+    "manuscript": ["title", "abstractNote", "manuscriptType", "place", "date", "numPages", "language",
+                   "shortTitle", "url", "accessDate", "extra"],
     "dataset": ["title", "abstractNote", "identifier", "type", "versionNumber", "date", "repository",
                 "repositoryLocation", "format", "DOI", "citationKey", "url", "accessDate", "language",
                 "shortTitle", "libraryCatalog", "callNumber", "rights", "extra"],
@@ -61,6 +63,10 @@ class FakeZotero:
         self.crossref_query: list[dict] = []    # works returned by /works?query.bibliographic (with _match terms)
         self.openalex: dict[str, dict] = {}     # doi -> OpenAlex work
         self.urls: dict[str, tuple[int, bytes, str]] = {}  # url -> (status, body, content-type)
+        self.openlibrary: dict[str, dict] = {}  # ISBN-13 -> record of /api/books?jscmd=data
+        self.googlebooks: dict[str, list[dict]] = {}  # ISBN-13 -> volumeInfo list returned for q=isbn:
+        self.dnb: dict[str, str] = {}  # ISBN-13 -> MARC21-xml record (the <record> element)
+        self.public_status: dict[str, int] = {}  # host -> HTTP status to answer with (quota, outage)
         self.fail_next: list[int] = []  # HTTP statuses to answer with before serving (tests retry)
 
     def dispatch(self, request: httpx.Request) -> httpx.Response:
@@ -132,8 +138,10 @@ class FakeZotero:
                 continue
             if "tag" in q and q["tag"][0] not in {t["tag"] for t in d.get("tags", [])}:
                 continue
-            if "q" in q and q["q"][0].lower() not in self._text(d, q.get("qmode", [""])[0] == "everything"):
-                continue
+            if "q" in q:  # like Zotero's quick search: every word must occur
+                text = self._text(d, q.get("qmode", [""])[0] == "everything")
+                if not all(w in text for w in q["q"][0].lower().split()):
+                    continue
             if "since" in q and it["version"] <= int(q["since"][0]):
                 continue
             if "itemKey" in q and it["key"] not in q["itemKey"][0].split(","):
@@ -350,6 +358,26 @@ class FakeZotero:
         self.calls.append((request.method, url))
         if "Zotero-API-Key" in request.headers:
             raise AssertionError("Zotero key sent to a third party")
+        host = request.url.host
+        if host in self.public_status:
+            return httpx.Response(self.public_status[host], json={"error": "simulated"})
+        pq = parse_qs(urlparse(url).query)
+        if url.startswith("https://openlibrary.org/api/books?"):
+            key = pq["bibkeys"][0]
+            rec = self.openlibrary.get(key.removeprefix("ISBN:"))
+            return httpx.Response(200, json={key: rec} if rec else {})
+        if url.startswith("https://www.googleapis.com/books/v1/volumes?"):
+            vols = self.googlebooks.get(pq["q"][0].removeprefix("isbn:"), [])
+            return httpx.Response(200, json={"kind": "books#volumes", "totalItems": len(vols),
+                                             **({"items": [{"volumeInfo": v} for v in vols]} if vols else {})})
+        if url.startswith("https://services.dnb.de/sru/dnb?"):
+            rec = self.dnb.get(pq["query"][0].removeprefix("num="))
+            body = ('<?xml version="1.0" encoding="UTF-8"?><searchRetrieveResponse xmlns="http://www.loc.gov/zing/srw/">'
+                    f'<version>1.1</version><numberOfRecords>{1 if rec else 0}</numberOfRecords>'
+                    + (f'<records><record><recordSchema>MARC21-xml</recordSchema><recordPacking>xml</recordPacking>'
+                       f'<recordData>{rec}</recordData><recordPosition>1</recordPosition></record></records>' if rec else "")
+                    + '</searchRetrieveResponse>')
+            return httpx.Response(200, content=body.encode(), headers={"Content-Type": "application/xml"})
         if url.startswith("https://api.crossref.org/works?"):
             q = parse_qs(urlparse(url).query).get("query.bibliographic", [""])[0].lower()
             hits = [w for w in self.crossref_query if any(t in q for t in w.get("_match", []))]

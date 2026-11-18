@@ -64,14 +64,22 @@ The endpoint is `http://127.0.0.1:3003/mcp`; every request carries `Authorizatio
 | Area | Tools |
 |---|---|
 | Search and read | `search_items`, `find_dois`, `get_item`, `get_fulltext`, `list_collections`, `list_tags`, `list_saved_searches`, `list_trash`, `list_related`, `find_duplicates` |
-| Create | `create_item`, `create_item_from_doi`, `create_item_from_patent`, `create_collection`, `add_note` |
+| Create | `create_item`, `create_item_from_doi`, `create_item_from_isbn`, `import_items`, `create_item_from_patent`, `create_collection`, `add_note` |
 | Edit | `update_item`, `update_items_batch`, `update_item_links`, `set_verification`, `set_related`, `update_collection`, `rename_tag` |
 | Delete and restore | `trash_item`, `restore_item`, `delete_collection`, `delete_tag` |
 | Output | `format_citations`, `export_items`, `export_annotations` |
-| PDF | `get_outline`, `get_annotations`, `annotate_pdf`, `attach_pdf`, `ocr_pdf`, `ocr_status`, `extract_references` |
+| PDF | `get_outline`, `get_annotations`, `annotate_pdf`, `update_annotation`, `delete_annotation`, `attach_pdf`, `ocr_pdf`, `ocr_status`, `extract_references` |
 | Snapshot | `refresh_library_snapshot`, `index_fulltext` |
 
 `find_dois` checks a list of DOIs against the library in one call (DOI field and `DOI:` lines in Extra); the index is rebuilt only when the library version changes, and `create_item_from_doi` uses it to refuse duplicates. `attach_pdf` finds open access copies of an item's DOI on OpenAlex (or takes a direct link), tries them in order until one returns a PDF, creates the attachment and hands the file to the OCR worker, which stores it on WebDAV and OCRs it if it is a scan. Publishers often refuse automated downloads; repositories usually do not.
+
+`create_item_from_doi`, `create_item_from_isbn` and `import_items` share one policy for works already in the library, `if_exists`: `skip` (default) reports the existing item and changes nothing, `file` adds the requested collections and tags to it (never removes any), `duplicate` creates a new item anyway. `allow_duplicate=true` is kept as a synonym of `duplicate`.
+
+`create_item_from_isbn` validates the check digit, looks the ISBN up in Open Library, then Google Books, then the DNB (the DNB first for the German-language group, `978-3`), and creates a `book` with the first record found; the catalogue goes to `source` and to the Library Catalog field. With `expected_title`, `expected_first_author` and `expected_year` it applies the same rules as `create_item_from_doi` (via `matching.py`): a mismatch is not created, a match gets a `Verified:` line. Duplicates are books with the same ISBN-13 (ISBN-10 converted); chapters carry their book's ISBN and are not counted. `dry_run` looks up and checks without writing.
+
+`import_items` creates up to 100 items from CSL JSON (one record, a list, or `{"items": [...]}`) or BibTeX/BibLaTeX, read by `bibtex.py` (standard library: `@string` macros, `#` concatenation, LaTeX accents and commands, name lists with particles, suffixes and `{Institutions}`). A record without a faithful Zotero type is refused and listed in `rejected` (a `@misc` without arXiv or URL, `@patent`, unknown CSL types) instead of becoming a generic document. Duplicates are found by DOI, by ISBN for books, else by title, first author and year with `matching.py`, and repeated records within one import are caught too. BibTeX keys are kept as `Citation Key:` lines in Extra; fields without a Zotero equivalent are listed per record in `unmapped`. Nothing is checked against a registry, so imported items are not marked verified.
+
+`update_annotation` changes the comment, colour or tags of an annotation; the marked text and position stay. `delete_annotation` deletes permanently, as the Zotero reader does, and only with `confirm=true`; without it, it shows the annotation.
 
 `check_claims` takes the claims of a draft, finds the cited source in the library and the passages of its full text that best match each claim, with page and `zotero://open-pdf` link; phrases in quotation marks and figures with their unit (`115 ms`, `50%`, `24 participants`) must appear verbatim in the text and are reported per claim. `save_references` stores the bibliographies of many items for the DOI MCP's maps.
 
@@ -109,6 +117,7 @@ ocr_worker.py run | scan | enqueue KEY [--replace] [--mode normal|rasterize|enha
 - `config.py`: settings from the environment
 - `core.py`: the FastMCP instance, the `tool` decorator (structured errors), async HTTP, caches (collections, item templates, the DOI index updated with `since=`), item helpers
 - `items.py`, `collections.py`, `pdf.py`, `ocr.py`: the tools by area
+- `imports.py`: `create_item_from_isbn` (Open Library, Google Books, DNB SRU/MARC21) and `import_items` (CSL JSON and BibTeX mapping, duplicate lookup); `bibtex.py`: the BibTeX reader, standard library only
 - `reading.py`: `get_outline` and `extract_references`; `checks.py`: `save_references`, `check_claims`, `index_fulltext`, with `bibliography.py` (reference lists from PDF text) and `claims.py` (BM25 passages, quotations and figures)
 - `transport.py`: stdio or HTTP with the token check
 - `matching.py`: a verbatim copy of the DOI MCP's `matching.py` (title similarity, surname and year rules, errata and replies), so `create_item_from_doi` and `extract_references` accept a record under the same rules as `find_doi` and `verify_doi`; update the two files together
@@ -138,4 +147,4 @@ pip install pytest
 python -m pytest tests
 ```
 
-`tests/test_tools.py` calls every tool against `tests/fake_zotero.py`, an in-memory stand-in for the Zotero Web API (and for Crossref, OpenAlex and PDF downloads) served through `httpx.MockTransport`; WebDAV and OCR directories are temporary. `tests/test_locate.py` checks the text location used by `annotate_pdf` and the size cap; `tests/test_ocr_worker.py` checks text clean-up, the WebDAV replacement with backup and `.prop`, and the queue. Nothing touches the network.
+`tests/test_imports.py` covers ISBN lookups (Open Library, Google Books, DNB served by the fake), the BibTeX reader and `import_items`. `tests/test_tools.py` calls every tool against `tests/fake_zotero.py`, an in-memory stand-in for the Zotero Web API (and for Crossref, OpenAlex and PDF downloads) served through `httpx.MockTransport`; WebDAV and OCR directories are temporary. `tests/test_locate.py` checks the text location used by `annotate_pdf` and the size cap; `tests/test_ocr_worker.py` checks text clean-up, the WebDAV replacement with backup and `.prop`, and the queue. Nothing touches the network.

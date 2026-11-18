@@ -92,12 +92,43 @@ async def create_item(
     return await post_items([tpl])
 
 
+IfExists = Annotated[Literal["skip", "file", "duplicate"], Field(
+    description="When the work is already in the library: 'skip' reports it and changes nothing; "
+                "'file' adds the given collections and tags to the existing item; 'duplicate' creates a new item anyway")]
+
+
+async def on_existing(existing: dict, if_exists: str, collection_keys: list[str] | None,
+                      tags: list[str] | None) -> dict:
+    """The answer for a work already in the library: status 'duplicate' with the existing item,
+    and with if_exists='file' the collections and tags it was missing added to it (never removed)."""
+    out: dict[str, Any] = {"status": "duplicate", "existing": existing}
+    if if_exists != "file":
+        return out
+    it = await fetch_item(existing["key"])
+    d = it["data"]
+    new_c = [c for c in dict.fromkeys(key_of(k) for k in collection_keys or []) if c not in d.get("collections", [])]
+    have = {t["tag"] for t in d.get("tags", [])}
+    new_t = [t for t in dict.fromkeys(tags or []) if t not in have]
+    body: dict[str, Any] = {}
+    if new_c:
+        body["collections"] = d.get("collections", []) + new_c
+    if new_t:
+        body["tags"] = d.get("tags", []) + [{"tag": t} for t in new_t]
+    if body:
+        r = await patch(it["key"], it["version"], body)
+        if r.get("status") != "ok":
+            return r | {"existing": existing}
+    out["filed"] = {"collections_added": new_c, "tags_added": new_t}
+    return out
+
+
 @tool
 async def create_item_from_doi(
     doi: str,
     collection_keys: list[str] | None = None,
     tags: list[str] | None = None,
-    allow_duplicate: Annotated[bool, Field(description="Create even if the DOI is already in the library")] = False,
+    if_exists: IfExists = "skip",
+    allow_duplicate: Annotated[bool, Field(description="Same as if_exists='duplicate' (kept for older callers)")] = False,
     expected_title: Annotated[str | None, Field(description="Title of the work you mean; the DOI's record must match it")] = None,
     expected_first_author: Annotated[str | None, Field(description="Surname of the first author you expect")] = None,
     expected_year: Annotated[int | None, Field(description="Year you expect (±1 allowed)")] = None,
@@ -111,6 +142,12 @@ async def create_item_from_doi(
     retraction notices, OpenAlex is_retracted) are not created either unless force=True."""
     from .core import public
     doi = api.norm_doi(doi)
+    if allow_duplicate:
+        if_exists = "duplicate"
+    if if_exists != "duplicate":
+        existing = (await library_dois()).get(doi)
+        if existing:
+            return await on_existing(existing, if_exists, collection_keys, tags)
     r = await public().get(f"https://api.crossref.org/works/{doi}")
     if r.status_code != 200:
         raise ToolError(f"DOI not found on Crossref (HTTP {r.status_code})")
@@ -118,10 +155,6 @@ async def create_item_from_doi(
     title = " ".join((m.get("title") or [""])[0].split())
     if m.get("subtitle"):
         title += ": " + m["subtitle"][0]
-    if not allow_duplicate:
-        existing = (await library_dois()).get(doi)
-        if existing:
-            return {"status": "duplicate", "existing": existing}
     problems, warnings = await _check_doi_record(m, doi, title, expected_title, expected_first_author, expected_year)
     if problems and not force:
         return {"status": "not_created", "problems": problems, "warnings": warnings,
