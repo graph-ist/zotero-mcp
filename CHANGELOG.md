@@ -3,6 +3,7 @@
 ## Unreleased
 
 Added
+- `merge_duplicates`: plan first, then `confirm=true` with a `plan_token` tied to the versions of every item involved; fills empty fields, merges Extra lines, tags, collections and relations (`dc:replaces` on the kept item), moves attachments and notes, re-links related items, trashes the others only after every child has moved. Different item types or DOIs are refused.
 - `create_item_from_isbn`: a book from Open Library, Google Books or the DNB (DNB first for `978-3`), with check digit validation, the same expected title/author/year check and `Verified:` line as `create_item_from_doi`, duplicate check on the ISBN-13 of books, `dry_run`.
 - `import_items`: up to 100 items from CSL JSON or BibTeX/BibLaTeX (new `bibtex.py`, standard library only); records without a faithful Zotero type are refused, duplicates found by DOI, ISBN or title + first author + year, citation keys kept in Extra, unmapped fields reported, `dry_run`.
 - `update_annotation` (comment, colour, tags) and `delete_annotation` (permanent, needs `confirm=true`).

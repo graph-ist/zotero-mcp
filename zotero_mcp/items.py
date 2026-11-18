@@ -1,4 +1,5 @@
 """Tools on items: search, read, create, edit, trash, relations, duplicates, citations, export."""
+import hashlib
 import html
 import re
 import time
@@ -545,7 +546,8 @@ async def find_duplicates(
 ) -> dict:
     """Groups of items sharing the same DOI or the same normalized title, plus preprint ↔
     published-version pairs (match 'preprint'): similar titles, shared author surnames and
-    years within 3. Check those before merging: a preprint can differ from the final version."""
+    years within 3. Check those before merging: a preprint can differ from the final version.
+    Merge a doi or title group with merge_duplicates; link a preprint pair with set_related."""
     path = f"/collections/{key_of(collection_key)}/items/top" if collection_key else "/items/top"
     items = await paginate(path)
     groups: dict[str, list[dict]] = {}
@@ -642,3 +644,219 @@ async def set_related(key: str, other_key: str, remove: bool = False) -> dict:
             rel.pop("dc:relation", None)
         objs.append({"key": x["key"], "version": x["version"], "relations": rel})
     return await post_updates(objs)
+
+
+# ---- merging duplicates ---------------------------------------------------------------------------
+MERGE_SKIP = {"key", "version", "itemType", "parentItem", "deleted", "relations", "collections", "tags",
+              "creators", "extra", "dateAdded", "dateModified", "inPublications"}
+# differences not worth reporting: they say when and where the record was fetched, not what it is
+MERGE_QUIET = {"accessDate", "libraryCatalog", "callNumber", "archiveLocation"}
+_EXTRA_LINE = re.compile(r"^([A-Za-z][\w .-]{0,40}):\s*(.*)$")
+
+
+def _extra_merge(master: str, others: list[tuple[str, str]]) -> tuple[str, list[str], dict]:
+    """Master's Extra plus the lines of the others it lacks. A "Name: value" line is added only
+    when the master has no line with that name (one Verified, one Citation Key, ...); a different
+    value under a name the master has is a conflict, and the master's line stays."""
+    lines = [ln for ln in (master or "").splitlines() if ln.strip()]
+    names = {m.group(1).lower(): m.group(2) for ln in lines if (m := _EXTRA_LINE.match(ln))}
+    added, conflicts = [], {}
+    for key, extra in others:
+        for ln in (extra or "").splitlines():
+            ln = ln.rstrip()
+            if not ln.strip() or ln in lines:
+                continue
+            m = _EXTRA_LINE.match(ln)
+            if m and m.group(1).lower() in names:
+                if m.group(2) != names[m.group(1).lower()]:
+                    conflicts.setdefault(f"extra:{m.group(1)}", []).append({"key": key, "value": m.group(2)})
+                continue
+            if m:
+                names[m.group(1).lower()] = m.group(2)
+            lines.append(ln)
+            added.append(ln)
+    return "\n".join(lines), added, conflicts
+
+
+def _short(v: Any, n: int = 200) -> Any:
+    return v[:n] + "…" if isinstance(v, str) and len(v) > n else v
+
+
+def _rel_list(rel: dict, pred: str) -> list[str]:
+    v = (rel or {}).get(pred, [])
+    return [v] if isinstance(v, str) else list(v)
+
+
+async def _merge_plan(keys: list[str], keep: str | None) -> dict:
+    """Everything merge_duplicates would do, computed from the current state of the items."""
+    keys = list(dict.fromkeys(key_of(k) for k in keys))
+    if len(keys) < 2:
+        raise ToolError("give at least two different item keys")
+    # includeTrashed: an item in the trash must be reported as such, not as missing
+    items = {it["key"]: it for it in await paginate("/items", {"itemKey": ",".join(keys), "includeTrashed": 1})}
+    missing = [k for k in keys if k not in items]
+    if missing:
+        raise ToolError(f"items not found: {missing}")
+    for it in items.values():
+        d = it["data"]
+        if d["itemType"] in ("attachment", "note", "annotation") or d.get("parentItem"):
+            raise ToolError(f"{it['key']} is a {d['itemType']} child item: only top-level items are merged")
+        if d.get("deleted"):
+            raise ToolError(f"{it['key']} is in the trash: restore it first or leave it out")
+    types = {it["data"]["itemType"] for it in items.values()}
+    if len(types) > 1:
+        raise ToolError(f"different item types {sorted(types)}: a preprint and its published version, or a "
+                        "chapter and its book, are different works; link them with set_related, or change "
+                        "the type with update_item first if one is simply wrong")
+    dois = {k: api.item_dois(it["data"]) for k, it in items.items()}
+    distinct = {ds[0] for ds in dois.values() if ds}
+    if len(distinct) > 1:
+        raise ToolError(f"different DOIs {sorted(distinct)}: not the same record (erratum, reply, other "
+                        "version?); merge only items with the same DOI or with none")
+    kids = {k: await paginate(f"/items/{k}/children", {"includeTrashed": 1}) for k in keys}
+    if keep:
+        keep = key_of(keep)
+        if keep not in items:
+            raise ToolError(f"keep={keep} is not among the keys")
+    else:
+        def rank(k):
+            d = items[k]["data"]
+            return (-len(kids[k]), not d.get("abstractNote"), api.parse_verified(d.get("extra")) is None,
+                    d.get("dateAdded") or "9999", k)
+        keep = sorted(keys, key=rank)[0]
+    master = items[keep]
+    others = [k for k in keys if k != keep]
+    md = master["data"]
+    order = sorted(others, key=lambda k: (-len(kids[k]), items[k]["data"].get("dateAdded") or "9999", k))
+
+    fill, conflicts = {}, {}
+    for f, v in md.items():
+        if f in MERGE_SKIP or isinstance(v, (dict, list)):
+            continue
+        vals = [(k, items[k]["data"].get(f)) for k in order if items[k]["data"].get(f) not in (None, "")]
+        if v in (None, "") and vals:
+            fill[f] = {"value": vals[0][1], "from": vals[0][0]}
+        elif v not in (None, "") and f not in MERGE_QUIET:
+            diff = [{"key": k, "value": _short(x)} for k, x in vals if str(x).strip() != str(v).strip()]
+            if diff:
+                conflicts[f] = {"kept": _short(v), "others": diff}
+    creators_from = None
+    if not md.get("creators"):
+        creators_from = next((k for k in order if items[k]["data"].get("creators")), None)
+    extra, extra_added, extra_conf = _extra_merge(md.get("extra") or "", [(k, items[k]["data"].get("extra")) for k in order])
+    conflicts |= {f: {"kept": md.get("extra"), "others": v} for f, v in extra_conf.items()}
+    have_t = {t["tag"] for t in md.get("tags", [])}
+    tags_added = list(dict.fromkeys(t["tag"] for k in order for t in items[k]["data"].get("tags", [])
+                                    if t["tag"] not in have_t))
+    colls_added = list(dict.fromkeys(c for k in order for c in items[k]["data"].get("collections", [])
+                                     if c not in md.get("collections", [])))
+
+    uri = {k: _item_uri(k) for k in keys}
+    merged_uris = {uri[k] for k in others}
+    rel = {p: _rel_list(md.get("relations"), p) for p in (md.get("relations") or {})}
+    for k in order:
+        for p, vals in (items[k]["data"].get("relations") or {}).items():
+            cur = rel.setdefault(p, [])
+            cur += [u for u in ([vals] if isinstance(vals, str) else vals) if u not in cur]
+    for p in list(rel):
+        rel[p] = [u for u in rel[p] if u != uri[keep] and (p == "dc:replaces" or u not in merged_uris)]
+    rel["dc:replaces"] = list(dict.fromkeys(rel.get("dc:replaces", []) + [uri[k] for k in others]))
+    rel = {p: v for p, v in rel.items() if v}
+    # items related to a merged item point to the master instead (Zotero keeps both directions)
+    linked = {u.rsplit("/", 1)[-1] for k in others for u in _rel_list(items[k]["data"].get("relations"), "dc:relation")}
+    linked -= set(keys)
+    relink = []
+    for it in await items_by_keys(sorted(linked)) if linked else []:
+        r = dict(it["data"].get("relations") or {})
+        cur = _rel_list(r, "dc:relation")
+        new = list(dict.fromkeys(uri[keep] if u in merged_uris else u for u in cur))
+        if new != cur:
+            r["dc:relation"] = new
+            relink.append({"key": it["key"], "version": it["version"], "relations": r})
+
+    body: dict[str, Any] = {f: x["value"] for f, x in fill.items()}
+    if creators_from:
+        body["creators"] = items[creators_from]["data"]["creators"]
+    if extra_added:
+        body["extra"] = extra
+    if tags_added:
+        body["tags"] = md.get("tags", []) + [{"tag": t} for t in tags_added]
+    if colls_added:
+        body["collections"] = md.get("collections", []) + colls_added
+    if rel != (md.get("relations") or {}):
+        body["relations"] = rel
+    move = [{"key": c["key"], "version": c["version"], "parentItem": keep} for k in order for c in kids[k]]
+    state = sorted((k, it["version"]) for k, it in items.items()) + [("keep", keep)] + \
+        sorted((c["key"], c["version"]) for c in move) + sorted((r["key"], r["version"]) for r in relink)
+    token = hashlib.sha256(repr(state).encode()).hexdigest()[:16]
+    colls = await collections()
+    by_type: dict[str, int] = {}
+    for k in order:
+        for c in kids[k]:
+            by_type[c["data"]["itemType"]] = by_type.get(c["data"]["itemType"], 0) + 1
+    view = {"keep": summary(master, colls), "merge": [summary(items[k], colls) for k in order],
+            "fill": fill, "creators_from": creators_from, "extra_added": extra_added, "tags_added": tags_added,
+            "collections_added": [colls.get(c, {}).get("path", c) for c in colls_added],
+            "children_to_move": by_type, "relinked_items": [r["key"] for r in relink],
+            "conflicts": conflicts, "plan_token": token}
+    return {"view": {k: v for k, v in view.items() if v not in (None, {}, [])} | {"plan_token": token},
+            "master": master, "others": [items[k] for k in order], "body": body, "move": move,
+            "relink": relink, "token": token}
+
+
+@tool
+async def merge_duplicates(
+    keys: Annotated[list[str], Field(description="The items to merge into one (2 to 10), e.g. a group from find_duplicates",
+                                     min_length=2, max_length=10)],
+    keep: Annotated[str | None, Field(description="Key of the item to keep; default the one with most attachments "
+                                      "and notes, then with an abstract, then verified, then oldest")] = None,
+    confirm: Annotated[bool, Field(description="False returns the plan; true executes it (needs plan_token)")] = False,
+    plan_token: Annotated[str | None, Field(description="The plan_token of the plan you reviewed")] = None,
+) -> dict:
+    """Merge duplicate items into one, as Zotero desktop does, in two calls.
+
+    The first call (confirm=false) returns the plan: the item kept, empty fields filled from the
+    others, Extra lines, tags and collections added, attachments and notes moved (annotations
+    follow their PDFs), related items re-linked, and conflicts where the kept item's value wins.
+    Review it, then call again with confirm=true and its plan_token. The token covers the
+    version of every item involved: if anything changed in between, nothing is done and a new
+    plan is returned. The kept item records the others as dc:replaces; they go to the trash
+    (restore_item undoes that, not the merge), and only after every attachment and note has
+    moved. Items of different types, or with different DOIs, are refused: a preprint and its
+    published version are different works (use set_related)."""
+    plan = await _merge_plan(keys, keep)
+    if not confirm:
+        return {"status": "plan", **plan["view"]}
+    if plan_token != plan["token"]:
+        return {"status": "plan_changed" if plan_token else "confirm_required",
+                "detail": ("the items changed since that plan: review this one and confirm with its token"
+                           if plan_token else "pass the plan_token of the plan you reviewed"), **plan["view"]}
+    master = plan["master"]
+    out: dict[str, Any] = {"kept": master["key"], "merged": [o["key"] for o in plan["others"]]}
+    if plan["body"]:
+        r = await patch(master["key"], master["version"], plan["body"])
+        if r.get("status") != "ok":
+            return r | {"status": "error", "stage": "update of the kept item; nothing else was changed"}
+    moved = await post_updates(plan["move"]) if plan["move"] else {"updated": 0, "failed": None}
+    out["children_moved"] = moved["updated"] + moved.get("unchanged", 0)
+    if moved.get("failed"):
+        return out | {"status": "partial", "stage": "moving attachments and notes",
+                      "failed": moved["failed"],
+                      "detail": "the kept item was updated and some children moved; no item was trashed. "
+                                "Run merge_duplicates again with the same keys to finish"}
+    if plan["relink"]:
+        rl = await post_updates(plan["relink"])
+        out["relinked"] = rl["updated"]
+        if rl.get("failed"):
+            out["relink_failed"] = rl["failed"]
+    trashed, failed = [], {}
+    for o in plan["others"]:
+        r = await patch(o["key"], o["version"], {"deleted": 1})
+        if r.get("status") == "ok":
+            trashed.append(o["key"])
+        else:
+            failed[o["key"]] = r.get("detail") or r.get("hint")
+    out["trashed"] = trashed
+    if failed:
+        return out | {"status": "partial", "stage": "trash", "failed": failed}
+    return {"status": "merged", **out}
