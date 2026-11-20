@@ -65,7 +65,8 @@ class FakeZotero:
         self.urls: dict[str, tuple[int, bytes, str]] = {}  # url -> (status, body, content-type)
         self.openlibrary: dict[str, dict] = {}  # ISBN-13 -> record of /api/books?jscmd=data
         self.googlebooks: dict[str, list[dict]] = {}  # ISBN-13 -> volumeInfo list returned for q=isbn:
-        self.dnb: dict[str, str] = {}  # ISBN-13 -> MARC21-xml record (the <record> element)
+        self.dnb: dict[str, str] = {}  # ISBN as queried (13 or 10 digits) -> MARC21-xml record (the <record> element)
+        self.dnb_diagnostic: str | None = None  # an SRU diagnostic message to answer with
         self.public_status: dict[str, int] = {}  # host -> HTTP status to answer with (quota, outage)
         self.fail_next: list[int] = []  # HTTP statuses to answer with before serving (tests retry)
 
@@ -372,6 +373,12 @@ class FakeZotero:
                                              **({"items": [{"volumeInfo": v} for v in vols]} if vols else {})})
         if url.startswith("https://services.dnb.de/sru/dnb?"):
             rec = self.dnb.get(pq["query"][0].removeprefix("num="))
+            if self.dnb_diagnostic:
+                body = ('<?xml version="1.0" encoding="UTF-8"?><searchRetrieveResponse xmlns="http://www.loc.gov/zing/srw/">'
+                        '<version>1.1</version><numberOfRecords>0</numberOfRecords><diagnostics>'
+                        '<diagnostic xmlns="http://www.loc.gov/zing/srw/diagnostic/"><uri>info:srw/diagnostic/1/10</uri>'
+                        f'<message>{self.dnb_diagnostic}</message></diagnostic></diagnostics></searchRetrieveResponse>')
+                return httpx.Response(200, content=body.encode(), headers={"Content-Type": "application/xml"})
             body = ('<?xml version="1.0" encoding="UTF-8"?><searchRetrieveResponse xmlns="http://www.loc.gov/zing/srw/">'
                     f'<version>1.1</version><numberOfRecords>{1 if rec else 0}</numberOfRecords>'
                     + (f'<records><record><recordSchema>MARC21-xml</recordSchema><recordPacking>xml</recordPacking>'

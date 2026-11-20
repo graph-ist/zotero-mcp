@@ -94,6 +94,15 @@ def norm_isbn(s: str | None) -> str | None:
     return None
 
 
+def isbn10(isbn13: str) -> str | None:
+    """The ISBN-10 form of a 978 ISBN-13 (979 ISBNs have none)."""
+    if not (isbn13 and len(isbn13) == 13 and isbn13.startswith("978")):
+        return None
+    core = isbn13[3:12]
+    check = (11 - sum((10 - i) * int(c) for i, c in enumerate(core)) % 11) % 11
+    return core + ("X" if check == 10 else str(check))
+
+
 def item_isbns(data: dict) -> list[str]:
     """ISBN-13s of an item: the ISBN field (often several, space- or comma-separated), then
     "ISBN: ..." lines in Extra."""

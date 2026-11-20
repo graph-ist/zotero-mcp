@@ -687,7 +687,30 @@ def _rel_list(rel: dict, pred: str) -> list[str]:
     return [v] if isinstance(v, str) else list(v)
 
 
-async def _merge_plan(keys: list[str], keep: str | None) -> dict:
+def _edition_signals(items: dict[str, dict]) -> list[str]:
+    """Why these items look like different editions or printings rather than copies of one
+    record: years more than one apart, disjoint ISBNs, different edition statements, publishers
+    that share no name (by word sets, so 'MIT Press' and 'The MIT Press' agree)."""
+    out = []
+    years = sorted({y for it in items.values() if (y := _item_year(it["data"]))})
+    if years and years[-1] - years[0] > 1:
+        out.append(f"years {', '.join(map(str, years))}")
+    isbns = [set(api.item_isbns(it["data"])) for it in items.values()]
+    isbns = [s for s in isbns if s]
+    if len(isbns) > 1 and any(not (a & b) for i, a in enumerate(isbns) for b in isbns[i + 1:]):
+        out.append("different ISBNs")
+    eds = {matching.norm(it["data"].get("edition")) for it in items.values()} - {""}
+    if len(eds) > 1:
+        out.append(f"editions {sorted(it['data'].get('edition') for it in items.values() if it['data'].get('edition'))}")
+    pubs = [(it["data"].get("publisher") or "").strip() for it in items.values()]
+    words = [set(matching.norm(p).split()) - {"the", "press", "verlag", "editore", "edizioni", "publishing", "publishers"}
+             for p in pubs if p]
+    if len(words) > 1 and any(a and b and not (a <= b or b <= a) for i, a in enumerate(words) for b in words[i + 1:]):
+        out.append(f"publishers {sorted({p for p in pubs if p})}")
+    return out
+
+
+async def _merge_plan(keys: list[str], keep: str | None, allow_different_editions: bool = False) -> dict:
     """Everything merge_duplicates would do, computed from the current state of the items."""
     keys = list(dict.fromkeys(key_of(k) for k in keys))
     if len(keys) < 2:
@@ -713,6 +736,11 @@ async def _merge_plan(keys: list[str], keep: str | None) -> dict:
     if len(distinct) > 1:
         raise ToolError(f"different DOIs {sorted(distinct)}: not the same record (erratum, reply, other "
                         "version?); merge only items with the same DOI or with none")
+    signals = _edition_signals(items)
+    if signals and not allow_different_editions:
+        raise ToolError(f"these look like different editions or printings ({'; '.join(signals)}): each is a citable "
+                        "record, so keep the one you cite and link the others with set_related; if they are "
+                        "copies of the same edition with wrong data, pass allow_different_editions=true")
     kids = {k: await paginate(f"/items/{k}/children", {"includeTrashed": 1}) for k in keys}
     if keep:
         keep = key_of(keep)
@@ -812,6 +840,8 @@ async def merge_duplicates(
                                       "and notes, then with an abstract, then verified, then oldest")] = None,
     confirm: Annotated[bool, Field(description="False returns the plan; true executes it (needs plan_token)")] = False,
     plan_token: Annotated[str | None, Field(description="The plan_token of the plan you reviewed")] = None,
+    allow_different_editions: Annotated[bool, Field(description="Merge even if years, ISBNs, edition or publisher "
+                                                    "say the items are different editions")] = False,
 ) -> dict:
     """Merge duplicate items into one, as Zotero desktop does, in two calls.
 
@@ -823,8 +853,10 @@ async def merge_duplicates(
     plan is returned. The kept item records the others as dc:replaces; they go to the trash
     (restore_item undoes that, not the merge), and only after every attachment and note has
     moved. Items of different types, or with different DOIs, are refused: a preprint and its
-    published version are different works (use set_related)."""
-    plan = await _merge_plan(keys, keep)
+    published version are different works (use set_related). So are items that look like
+    different editions (years more than one apart, disjoint ISBNs, different edition or
+    publisher), unless allow_different_editions=true: each edition is a record you can cite."""
+    plan = await _merge_plan(keys, keep, allow_different_editions)
     if not confirm:
         return {"status": "plan", **plan["view"]}
     if plan_token != plan["token"]:

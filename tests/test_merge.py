@@ -92,3 +92,30 @@ def test_merge_refusals(zot, call):
     assert "not among" in call("merge_duplicates", keys=[a, b], keep=pre)["detail"]
     zot.items[b]["data"]["deleted"] = True
     assert "trash" in call("merge_duplicates", keys=[a, b])["detail"]
+
+
+def test_merge_refuses_different_editions_unless_allowed(zot, call):
+    mc = [{"creatorType": "author", "lastName": "McLuhan", "firstName": "Marshall"}]
+    a = zot.add_item("book", title="Understanding media: the extensions of man", date="1994", publisher="MIT Press", creators=mc)
+    b = zot.add_item("book", title="Understanding media: the extensions of man", date="2013", publisher="Gingko Press", creators=mc)
+    out = call("merge_duplicates", keys=[a, b])
+    assert out["status"] == "error" and "different editions" in out["detail"]
+    assert "years 1994, 2013" in out["detail"] and "Gingko Press" in out["detail"] and "set_related" in out["detail"]
+    plan = call("merge_duplicates", keys=[a, b], allow_different_editions=True)
+    assert plan["status"] == "plan"
+    done = call("merge_duplicates", keys=[a, b], allow_different_editions=True, confirm=True, plan_token=plan["plan_token"])
+    assert done["status"] == "merged"
+
+
+def test_merge_edition_signals(zot, call):
+    s = [{"creatorType": "author", "lastName": "Simon", "firstName": "Herbert"}]
+    same = [zot.add_item("book", title="The sciences of the artificial", date="1996", publisher=p, creators=s, ISBN=i)
+            for p, i in (("MIT Press", "0262691914"), ("The MIT Press", "978-0-262-69191-8"))]
+    assert call("merge_duplicates", keys=same)["status"] == "plan"  # one edition: same ISBN, publisher wording aside
+    isbn = [zot.add_item("book", title="The sciences of the artificial", date="1996", creators=s, ISBN=i)
+            for i in ("0262691914", "0262193744")]
+    assert "different ISBNs" in call("merge_duplicates", keys=isbn)["detail"]
+    ed = [zot.add_item("book", title="Being and time", date="1962", creators=s, edition=e) for e in ("1st", "7th")]
+    assert "editions" in call("merge_duplicates", keys=ed)["detail"]
+    near = [zot.add_item("book", title="Close years", date=y, creators=s) for y in ("2001", "2002")]
+    assert call("merge_duplicates", keys=near)["status"] == "plan"  # online and print year
