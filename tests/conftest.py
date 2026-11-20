@@ -23,7 +23,7 @@ os.makedirs(os.environ["ZOTERO_WEBDAV_DIR"])
 os.makedirs(os.environ["KNOWLEDGE_DIR"])
 
 import server  # noqa: E402,F401  (the entry point must import)
-from zotero_mcp import api, config, core  # noqa: E402
+from zotero_mcp import api, config, core, imports  # noqa: E402
 from fake_zotero import FakeZotero  # noqa: E402
 
 
@@ -37,8 +37,10 @@ def zot():
     fake = FakeZotero()
     api.TRANSPORT = httpx.MockTransport(fake.dispatch)
     core.reset_clients()
+    imports._dnb_pause.update(until=0.0, status=None)
     yield fake
     core.reset_clients()
+    imports._dnb_pause.update(until=0.0, status=None)
     api.TRANSPORT = None
 
 

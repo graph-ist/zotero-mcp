@@ -1,7 +1,7 @@
 """Books by ISBN, CSL JSON and BibTeX import, the BibTeX reader and the ISBN helpers."""
 import json
 
-from zotero_mcp import api, bibtex
+from zotero_mcp import api, bibtex, imports
 from conftest import article
 
 SIMON = "9780262691918"       # Simon, The Sciences of the Artificial, 3rd ed. (ISBN-10 0-262-69191-4)
@@ -114,6 +114,22 @@ def test_isbn_dnb_isbn10_fallback_and_reported_outcomes(zot, call):
                                "industryIdentifiers": [{"type": "ISBN_13", "identifier": SIMON}]}]
     ok = call("create_item_from_isbn", isbn=SIMON)
     assert ok["catalogues"] == {"Open Library": "HTTP 503", "Google Books": "used"}
+
+
+def test_isbn_dnb_is_left_alone_after_403_or_429(zot, call):
+    zot.openlibrary[HABERMAS] = {"title": "Strukturwandel der Offentlichkeit", "authors": [{"name": "Jürgen Habermas"}]}
+    zot.dnb[HABERMAS] = MARC_HABERMAS
+    zot.public_status["services.dnb.de"] = 403
+    first = call("create_item_from_isbn", isbn=HABERMAS, dry_run=True)
+    assert first["catalogues"]["DNB"] == "HTTP 403" and first["record"]["source"] == "Open Library"
+    # the block is lifted, but the server keeps away from the DNB for the pause
+    del zot.public_status["services.dnb.de"]
+    second = call("create_item_from_isbn", isbn=HABERMAS, dry_run=True)
+    assert second["catalogues"]["DNB"].startswith("paused for ") and second["catalogues"]["DNB"].endswith("after HTTP 403")
+    assert second["record"]["source"] == "Open Library"
+    imports._dnb_pause["until"] = 0.0  # pause over
+    third = call("create_item_from_isbn", isbn=HABERMAS, dry_run=True)
+    assert third["catalogues"] == {"DNB": "used"} and third["record"]["source"] == "DNB"
 
 
 def test_isbn_errors(zot, call):
