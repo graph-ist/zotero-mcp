@@ -75,7 +75,9 @@ async def _googlebooks(isbn: str) -> dict | None:
 _MARC_ROLES = {"aut": "author", "edt": "editor", "trl": "translator", "ctb": "contributor"}
 
 
-async def _dnb(isbn: str) -> dict | None:
+async def _dnb_query(isbn: str):
+    """The parsed SRU answer for one ISBN form, or None when it has no record; an SRU diagnostic
+    (a query the service rejects) is raised, not taken for 'not found'."""
     r = await public().get("https://services.dnb.de/sru/dnb", timeout=20, params={
         "version": "1.1", "operation": "searchRetrieve", "query": f"num={isbn}",
         "recordSchema": "MARC21-xml", "maximumRecords": "1"})
@@ -85,6 +87,23 @@ async def _dnb(isbn: str) -> dict | None:
         root = ET.fromstring(r.content)
     except ET.ParseError:
         raise ToolError("unreadable answer") from None
+    for el in root.iter():
+        if el.tag.endswith("diagnostic"):
+            msg = " ".join(" ".join((c.text or "").split()) for c in el if (c.text or "").strip())
+            raise ToolError(f"SRU diagnostic: {msg or 'no message'}")
+    count = next((el.text for el in root.iter() if el.tag.endswith("numberOfRecords")), None)
+    if count is not None and count.strip() == "0":
+        return None
+    return root
+
+
+async def _dnb(isbn: str) -> dict | None:
+    # the catalogue records the ISBN as printed in the book: older books carry only the ISBN-10
+    root = await _dnb_query(isbn)
+    if root is None and api.isbn10(isbn):
+        root = await _dnb_query(api.isbn10(isbn))
+    if root is None:
+        return None
     fields: dict[str, list[dict]] = {}
     for df in root.iter():
         if not df.tag.endswith("datafield"):
@@ -146,7 +165,8 @@ async def create_item_from_isbn(
 ) -> dict:
     """Create a book item from its ISBN, with metadata from Open Library, then Google Books, then
     the DNB (the DNB first for ISBNs of the German-language group, 978-3). The first catalogue
-    with a record is used and named in `source` and in the item's Library Catalog field.
+    with a record is used and named in `source` and in the item's Library Catalog field;
+    `catalogues` gives the outcome of each catalogue queried ('used', 'not found', or the error).
 
     Pass expected_title / expected_first_author / expected_year when you know the book: a
     record that does not match is not created (status 'not_created'), and a matching one gets
@@ -168,10 +188,11 @@ async def create_item_from_isbn(
         try:
             rec = await CATALOGUES[name](norm)
         except (ToolError, httpx.HTTPError, ValueError, KeyError) as e:
-            tried[name] = str(e) or type(e).__name__
+            tried[name] = f"{type(e).__name__}: {e}" if not isinstance(e, ToolError) else str(e)
             continue
         if rec:
             source = name
+            tried[name] = "used"
             break
         tried[name] = "not found"
     if not rec:
@@ -198,11 +219,12 @@ async def create_item_from_isbn(
               "edition": rec.get("edition")}
     record = {k: v for k, v in record.items() if v}
     if problems and not force:
-        return {"status": "not_created", "problems": problems, "warnings": warnings, "record": record}
+        return {"status": "not_created", "problems": problems, "warnings": warnings, "record": record,
+                "catalogues": tried}
     if dry_run:
         existing = (await library_isbns()).get(norm)
         return {"status": "dry_run", "record": record, "problems": problems, "warnings": warnings,
-                **({"existing": existing} if existing else {})}
+                "catalogues": tried, **({"existing": existing} if existing else {})}
     tpl = await template("book")
     values = {"title": full_title, "publisher": rec.get("publisher"), "place": rec.get("place"),
               "date": rec.get("date"), "numPages": rec.get("numPages"), "edition": rec.get("edition"),
@@ -220,7 +242,7 @@ async def create_item_from_isbn(
             "match", f"create_item_from_isbn {source.lower().replace(' ', '_')} title+author+year", _today()))
     out = await _post([tpl])
     res = {"status": "ok" if out[0].get("key") else "error", "created_keys": [out[0]["key"]] if out[0].get("key") else [],
-           "source": source, "title": full_title, "verified": verified}
+           "source": source, "title": full_title, "verified": verified, "catalogues": tried}
     if out[0].get("error"):
         res["detail"] = out[0]["error"]
     if problems or warnings:

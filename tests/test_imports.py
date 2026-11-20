@@ -37,6 +37,8 @@ def test_norm_isbn_converts_and_validates():
     assert api.norm_isbn("12345") is None
     assert api.item_isbns({"ISBN": "978-0-262-69191-8 0262691914, 3-518-28491-6"}) == [SIMON, HABERMAS]
     assert api.item_isbns({"ISBN": "", "extra": "ISBN: 3518284916"}) == [HABERMAS]
+    assert api.isbn10(HABERMAS) == "3518284916" and api.isbn10(SIMON) == "0262691914"
+    assert api.isbn10("9791234567896") is None
 
 
 # ---- create_item_from_isbn ---------------------------------------------------------------------
@@ -86,12 +88,32 @@ def test_isbn_german_group_asks_dnb_first_and_reads_marc(zot, call):
     out = call("create_item_from_isbn", isbn="3-518-28491-6", expected_first_author="Habermas", expected_year=1990,
                expected_title="Strukturwandel der Öffentlichkeit")
     assert out["status"] == "ok" and out["source"] == "DNB" and out["verified"] is True
+    assert out["catalogues"] == {"DNB": "used"}
     d = zot.items[out["created_keys"][0]]["data"]
     assert d["title"] == "Strukturwandel der Öffentlichkeit: Untersuchungen zu einer Kategorie der bürgerlichen Gesellschaft"
     assert (d["publisher"], d["place"], d["date"], d["edition"], d["numPages"], d["language"]) == \
         ("Suhrkamp", "Frankfurt am Main", "1990", "1. Aufl.", "391", "ger")
     assert d["creators"] == [{"creatorType": "author", "lastName": "Habermas", "firstName": "Jürgen"},
                              {"creatorType": "editor", "lastName": "Muster", "firstName": "Max"}]
+
+
+def test_isbn_dnb_isbn10_fallback_and_reported_outcomes(zot, call):
+    zot.dnb["3518284916"] = MARC_HABERMAS  # the catalogue knows the book by its printed ISBN-10 only
+    out = call("create_item_from_isbn", isbn=HABERMAS, dry_run=True)
+    assert out["record"]["source"] == "DNB" and out["catalogues"] == {"DNB": "used"}
+    del zot.dnb["3518284916"]
+    zot.dnb_diagnostic = "Unsupported index: num"
+    zot.openlibrary[HABERMAS] = {"title": "Strukturwandel der Offentlichkeit", "authors": [{"name": "Jürgen Habermas"}]}
+    fell_back = call("create_item_from_isbn", isbn=HABERMAS, dry_run=True)
+    assert fell_back["record"]["source"] == "Open Library"
+    assert fell_back["catalogues"] == {"DNB": "SRU diagnostic: info:srw/diagnostic/1/10 Unsupported index: num",
+                                       "Open Library": "used"}
+    zot.openlibrary[SIMON] = OL_SIMON
+    zot.public_status["openlibrary.org"] = 503
+    zot.googlebooks[SIMON] = [{"title": "The Sciences of the Artificial", "authors": ["Herbert A. Simon"],
+                               "industryIdentifiers": [{"type": "ISBN_13", "identifier": SIMON}]}]
+    ok = call("create_item_from_isbn", isbn=SIMON)
+    assert ok["catalogues"] == {"Open Library": "HTTP 503", "Google Books": "used"}
 
 
 def test_isbn_errors(zot, call):
