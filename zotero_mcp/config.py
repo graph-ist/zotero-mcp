@@ -2,7 +2,7 @@
 override a value at run time."""
 import os
 
-VERSION = "0.10.0"
+VERSION = "0.11.0"
 
 
 def _default_ocr_dir() -> str:

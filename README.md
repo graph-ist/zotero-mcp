@@ -15,7 +15,7 @@ Without WebDAV, searching, reading metadata and Zotero's full-text index, creati
 
 ## Installation
 
-The server installs straight from this GitHub repository. With [uv](https://docs.astral.sh/uv/), `uvx --from git+https://github.com/graph-ist/zotero-mcp graphist-zotero-mcp` downloads it into an isolated environment and starts the stdio server, with no clone and no account. Without a suffix uv takes the latest commit on `main`; for a fixed version add a tag, `git+https://github.com/graph-ist/zotero-mcp@v0.10.0`. (The distribution is named `graphist-zotero-mcp` because `zotero-mcp` belongs to another project on PyPI.)
+The server installs straight from this GitHub repository. With [uv](https://docs.astral.sh/uv/), `uvx --from git+https://github.com/graph-ist/zotero-mcp graphist-zotero-mcp` downloads it into an isolated environment and starts the stdio server, with no clone and no account. Without a suffix uv takes the latest commit on `main`; for a fixed version add a tag, `git+https://github.com/graph-ist/zotero-mcp@v0.11.0`. (The distribution is named `graphist-zotero-mcp` because `zotero-mcp` belongs to another project on PyPI.)
 
 ### Claude Desktop
 
@@ -59,7 +59,7 @@ The package installs `graphist-zotero-mcp` (the server; `python -m zotero_mcp` a
 ```sh
 python -m venv .venv
 .venv/bin/pip install --require-hashes -r requirements.lock.txt
-.venv/bin/pip install --no-deps "git+https://github.com/graph-ist/zotero-mcp@v0.10.0"     # or --no-deps . from a checkout
+.venv/bin/pip install --no-deps "git+https://github.com/graph-ist/zotero-mcp@v0.11.0"     # or --no-deps . from a checkout
 ```
 
 `requirements.lock.txt` pins every dependency with hashes (the versions running on the Pi). To update, loosen the pins, run `uv pip compile requirements.txt --universal --python-version 3.13 --generate-hashes -o requirements.lock.txt`, and run `uvx pip-audit` on the result.
