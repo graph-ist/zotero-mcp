@@ -6,6 +6,8 @@ Fixed
 - `merge_duplicates` refuses items that look like different editions or printings (years more than one apart, disjoint ISBNs, different edition statements, publishers with no name in common) and suggests `set_related`; `allow_different_editions=true` overrides. Two editions of a book with the same title and no DOI were accepted before.
 - `create_item_from_isbn` reports what each catalogue answered (`catalogues`: `used`, `not found`, or the error), also on success and in `dry_run`, so a catalogue skipped in silence shows why. The DNB lookup raises SRU diagnostics instead of taking them for "not found", and asks again with the ISBN-10 when the ISBN-13 finds nothing (older books are catalogued under the ISBN printed in them).
 
+- `create_item_from_isbn` leaves the DNB alone for six hours after an HTTP 403 or 429 (an address that asks too often is blocked, and insisting prolongs it); `catalogues` says `paused for N more minutes after HTTP 403`. The pause is kept in memory and ends with a restart.
+
 Added
 - `index_fulltext(changed=true, max_items)`: the whole library kept indexed incrementally (new items, changed attachments and annotations, files of deleted items removed), state in `KNOWLEDGE_DIR/.fulltext_state.json`; `graphist-zotero-index` (root wrapper `index_worker.py`) and `deploy/zotero-index.{service,timer}` run it daily.
 - `library.json` items carry `abstract` (at most 4000 characters); `schema_version` stays 1. Copy `tests/fixtures/contract/library.json` to the DOI MCP.

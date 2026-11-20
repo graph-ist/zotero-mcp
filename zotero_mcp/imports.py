@@ -4,6 +4,7 @@ Google Books, DNB) and CSL JSON or BibTeX records. Duplicates are checked agains
 handled with the same if_exists policy as create_item_from_doi."""
 import json
 import re
+import time
 import xml.etree.ElementTree as ET
 from typing import Annotated, Any, Literal
 
@@ -75,12 +76,30 @@ async def _googlebooks(isbn: str) -> dict | None:
 _MARC_ROLES = {"aut": "author", "edt": "editor", "trl": "translator", "ctb": "contributor"}
 
 
+# The DNB answers 403, then 429, to an address that asks too often. Insisting prolongs the block, so
+# after one of those answers the DNB is left alone for DNB_PAUSE_SECONDS (kept in memory: a restart
+# of the server asks again).
+DNB_PAUSE_SECONDS = 6 * 3600
+_dnb_pause: dict = {"until": 0.0, "status": None}
+
+
+def _dnb_paused() -> str | None:
+    left = _dnb_pause["until"] - time.monotonic()
+    if left <= 0:
+        return None
+    return f"paused for {int(left // 60) + 1} more minutes after HTTP {_dnb_pause['status']}"
+
+
 async def _dnb_query(isbn: str):
     """The parsed SRU answer for one ISBN form, or None when it has no record; an SRU diagnostic
     (a query the service rejects) is raised, not taken for 'not found'."""
+    if (paused := _dnb_paused()):
+        raise ToolError(paused)
     r = await public().get("https://services.dnb.de/sru/dnb", timeout=20, params={
         "version": "1.1", "operation": "searchRetrieve", "query": f"num={isbn}",
         "recordSchema": "MARC21-xml", "maximumRecords": "1"})
+    if r.status_code in (403, 429):
+        _dnb_pause.update(until=time.monotonic() + DNB_PAUSE_SECONDS, status=r.status_code)
     if r.status_code != 200:
         raise ToolError(f"HTTP {r.status_code}")
     try:
