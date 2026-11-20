@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.11.0 (2026-11-20)
+
 Fixed
 - `merge_duplicates` refuses items that look like different editions or printings (years more than one apart, disjoint ISBNs, different edition statements, publishers with no name in common) and suggests `set_related`; `allow_different_editions=true` overrides. Two editions of a book with the same title and no DOI were accepted before.
 - `create_item_from_isbn` reports what each catalogue answered (`catalogues`: `used`, `not found`, or the error), also on success and in `dry_run`, so a catalogue skipped in silence shows why. The DNB lookup raises SRU diagnostics instead of taking them for "not found", and asks again with the ISBN-10 when the ISBN-13 finds nothing (older books are catalogued under the ISBN printed in them).
